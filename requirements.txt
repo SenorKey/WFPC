@@ -1,0 +1,10 @@
+# Python packages (pip install -r requirements.txt)
+opencv-python
+pytesseract
+numpy
+Pillow
+
+# System dependency: Tesseract OCR engine (required by pytesseract)
+# macOS: brew install tesseract
+# Ubuntu/Debian: sudo apt install tesseract-ocr
+# Or download from: https://github.com/tesseract-ocr/tesseract
