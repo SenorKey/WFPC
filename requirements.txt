@@ -4,6 +4,7 @@ pytesseract
 numpy
 Pillow
 mss
+requests
 
 # System dependency: Tesseract OCR engine (required by pytesseract)
 # macOS: brew install tesseract
