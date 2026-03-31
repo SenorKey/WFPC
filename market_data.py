@@ -26,6 +26,14 @@ def fetch_all_items():
     """
     Fetch the full item catalog from warframe.market and return
     only prime-related items (parts AND sets).
+
+    Returns a list of dicts, each with:
+        - "name": display name (e.g. "Rhino Prime Chassis")
+        - "slug": the API's own URL slug (e.g. "rhino_prime_chassis")
+
+    We use the slug from the API directly instead of constructing it
+    from the name, because the API's slug doesn't always match a
+    simple name-to-slug conversion.
     """
     url = "https://api.warframe.market/v2/items"
     response = requests.get(url, headers=HEADERS)
@@ -35,30 +43,31 @@ def fetch_all_items():
     all_items = data["data"]
 
     # Keep anything with " Prime " in the name — this includes both
-    # individual parts (Chassis, Blade, etc.) and full sets
+    # individual parts (Chassis, Blade, etc.) and full sets.
+    # Store both the display name and the API's slug.
     prime_items = [
-        item["i18n"]["en"]["name"]
+        {
+            "name": item["i18n"]["en"]["name"],
+            "slug": item["slug"]
+        }
         for item in all_items
         if " prime " in item["i18n"]["en"]["name"].lower()
     ]
 
-    prime_items.sort()
+    # Sort by display name for consistent ordering
+    prime_items.sort(key=lambda x: x["name"])
     return prime_items
 
 
-def get_item_url(item_name):
-    """Convert an item name to its warframe.market URL slug."""
-    return item_name.replace(" ", "_").replace("&", "and").lower()
-
-
-def fetch_best_buy_price(item_name, max_retries=3):
+def fetch_best_buy_price(slug, display_name="", max_retries=3):
     """
     Fetch the highest online buy order price for a single item.
+    Uses the item's API slug (not a constructed URL) for the request.
+
     Returns the price in platinum, or None if no online buyers exist.
     Retries with exponential backoff if we get rate limited (429).
     """
-    item_url = get_item_url(item_name)
-    orders_url = f"https://api.warframe.market/v2/items/{item_url}/orders"
+    orders_url = f"https://api.warframe.market/v2/items/{slug}/orders"
 
     for attempt in range(max_retries + 1):
         try:
@@ -68,11 +77,11 @@ def fetch_best_buy_price(item_name, max_retries=3):
             if response.status_code == 429:
                 if attempt < max_retries:
                     wait_time = 2 ** (attempt + 1)  # 2s, 4s, 8s
-                    print(f"  Rate limited on {item_name}, waiting {wait_time}s (attempt {attempt + 1})...")
+                    print(f"  Rate limited on {display_name}, waiting {wait_time}s (attempt {attempt + 1})...")
                     time.sleep(wait_time)
                     continue
                 else:
-                    print(f"  Rate limited on {item_name}, giving up after {max_retries} retries.")
+                    print(f"  Rate limited on {display_name}, giving up after {max_retries} retries.")
                     return None
 
             response.raise_for_status()
@@ -89,7 +98,7 @@ def fetch_best_buy_price(item_name, max_retries=3):
             return max(buy_orders) if buy_orders else None
 
         except Exception as e:
-            print(f"  Error fetching price for {item_name}: {e}")
+            print(f"  Error fetching price for {display_name} ({slug}): {e}")
             return None
 
     return None
@@ -114,14 +123,17 @@ def get_set_prefix(item_name):
     return parts[0] if parts else item_name
 
 
-def group_into_sets(item_names):
-    """Group a list of item names into sets by their prefix."""
+def group_into_sets(prime_items):
+    """
+    Group a list of prime item dicts into sets by their prefix.
+    Each item dict has "name" and "slug" keys.
+    """
     sets = {}
-    for name in item_names:
-        prefix = get_set_prefix(name)
+    for item in prime_items:
+        prefix = get_set_prefix(item["name"])
         if prefix not in sets:
             sets[prefix] = []
-        sets[prefix].append(name)
+        sets[prefix].append(item)
     return sets
 
 
@@ -134,8 +146,9 @@ def fetch_all_prices(progress_callback=None, batch_size=3, batch_delay=1.0):
     Fetch all prime items and their best buy prices, grouped by set.
     This is the main function called at app startup.
 
-    Fetches prices in small batches with a delay between each batch
-    to avoid hitting warframe.market's rate limit (429 errors).
+    Fetches prices in small batches with a delay between each batch.
+    Default of 3 per batch with 1s delay respects the official
+    warframe.market rate limit of 3 requests per second.
 
     Args:
         progress_callback: Optional function(current, total, item_name)
@@ -150,49 +163,47 @@ def fetch_all_prices(progress_callback=None, batch_size=3, batch_delay=1.0):
             "timestamp": "2026-03-31T...",
             "sets": {
                 "Rhino": [
-                    {"name": "Rhino Prime Blueprint", "url": "...", "best_buy_price": 10},
-                    {"name": "Rhino Prime Chassis", "url": "...", "best_buy_price": 15},
+                    {"name": "Rhino Prime Blueprint", "slug": "...", "best_buy_price": 10},
                     ...
-                    {"name": "Rhino Prime Set", "url": "...", "best_buy_price": 45}
                 ],
                 ...
             }
         }
     """
-    # Step 1: Get all prime item names from warframe.market
+    # Step 1: Get all prime items (name + slug) from warframe.market
     print("Fetching item list from warframe.market...")
-    all_prime_names = fetch_all_items()
-    total = len(all_prime_names)
+    all_prime_items = fetch_all_items()
+    total = len(all_prime_items)
     print(f"Found {total} prime items (including sets).")
 
     # Step 2: Group items by their set prefix
-    grouped = group_into_sets(all_prime_names)
+    grouped = group_into_sets(all_prime_items)
     print(f"Grouped into {len(grouped)} sets.")
 
     # Step 3: Fetch prices in small batches with pauses between each batch.
-    # This keeps us under warframe.market's rate limit.
+    # Official rate limit is 3 requests/second, so batch_size=3 + 1s delay.
     print(f"Fetching prices ({batch_size} at a time, {batch_delay}s between batches)...")
-    prices = {}  # item_name → best_buy_price
+    prices = {}  # slug → best_buy_price
     completed = 0
 
     for i in range(0, total, batch_size):
-        batch = all_prime_names[i:i + batch_size]
+        batch = all_prime_items[i:i + batch_size]
 
         # Fetch this batch concurrently
         with ThreadPoolExecutor(max_workers=len(batch)) as executor:
-            future_to_name = {
-                executor.submit(fetch_best_buy_price, name): name
-                for name in batch
+            future_to_item = {
+                executor.submit(fetch_best_buy_price, item["slug"], item["name"]): item
+                for item in batch
             }
 
-            for future in as_completed(future_to_name):
-                name = future_to_name[future]
+            for future in as_completed(future_to_item):
+                item = future_to_item[future]
                 price = future.result()
-                prices[name] = price
+                prices[item["slug"]] = price
                 completed += 1
 
                 if progress_callback:
-                    progress_callback(completed, total, name)
+                    progress_callback(completed, total, item["name"])
 
         # Pause between batches to stay under the rate limit
         if i + batch_size < total:
@@ -201,13 +212,13 @@ def fetch_all_prices(progress_callback=None, batch_size=3, batch_delay=1.0):
     # Step 4: Build the final data structure, sorted by prefix and item name
     sets_data = {}
     for prefix in sorted(grouped.keys()):
-        item_names = grouped[prefix]
+        items_in_set = grouped[prefix]
         sets_data[prefix] = []
-        for name in sorted(item_names):
+        for item in sorted(items_in_set, key=lambda x: x["name"]):
             sets_data[prefix].append({
-                "name": name,
-                "url": get_item_url(name),
-                "best_buy_price": prices.get(name)
+                "name": item["name"],
+                "slug": item["slug"],
+                "best_buy_price": prices.get(item["slug"])
             })
 
     cache = {
@@ -306,7 +317,7 @@ if __name__ == "__main__":
         for item in items:
             price = item["best_buy_price"]
             price_str = f"{price}p" if price is not None else "no buyers"
-            print(f"  {item['name']}: {price_str}")
+            print(f"  {item['name']} ({item['slug']}): {price_str}")
 
     # Quick test: simulate OCR words
     print("\n--- Test OCR match: ['Rhino', 'Galatine', 'garbage'] ---")
