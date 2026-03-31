@@ -1,6 +1,7 @@
 import requests
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
@@ -50,32 +51,48 @@ def get_item_url(item_name):
     return item_name.replace(" ", "_").replace("&", "and").lower()
 
 
-def fetch_best_buy_price(item_name):
+def fetch_best_buy_price(item_name, max_retries=3):
     """
     Fetch the highest online buy order price for a single item.
     Returns the price in platinum, or None if no online buyers exist.
+    Retries with exponential backoff if we get rate limited (429).
     """
     item_url = get_item_url(item_name)
     orders_url = f"https://api.warframe.market/v2/items/{item_url}/orders"
 
-    try:
-        response = requests.get(orders_url, headers=HEADERS)
-        response.raise_for_status()
-        data = response.json()
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.get(orders_url, headers=HEADERS)
 
-        # Only consider buy orders from users who are currently online
-        buy_orders = [
-            order["platinum"]
-            for order in data["data"]["orders"]
-            if order["user"]["status"] != "offline"
-            and order["order_type"] == "buy"
-        ]
+            # If rate limited, wait longer on each retry and try again
+            if response.status_code == 429:
+                if attempt < max_retries:
+                    wait_time = 2 ** (attempt + 1)  # 2s, 4s, 8s
+                    print(f"  Rate limited on {item_name}, waiting {wait_time}s (attempt {attempt + 1})...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    print(f"  Rate limited on {item_name}, giving up after {max_retries} retries.")
+                    return None
 
-        return max(buy_orders) if buy_orders else None
+            response.raise_for_status()
+            data = response.json()
 
-    except Exception as e:
-        print(f"  Error fetching price for {item_name}: {e}")
-        return None
+            # Only consider buy orders from users who are currently online
+            buy_orders = [
+                order["platinum"]
+                for order in data["data"]["orders"]
+                if order["user"]["status"] != "offline"
+                and order["order_type"] == "buy"
+            ]
+
+            return max(buy_orders) if buy_orders else None
+
+        except Exception as e:
+            print(f"  Error fetching price for {item_name}: {e}")
+            return None
+
+    return None
 
 
 # =============================================================================
@@ -112,15 +129,20 @@ def group_into_sets(item_names):
 # MAIN FETCH + CACHE
 # =============================================================================
 
-def fetch_all_prices(progress_callback=None):
+def fetch_all_prices(progress_callback=None, batch_size=3, batch_delay=1.0):
     """
     Fetch all prime items and their best buy prices, grouped by set.
     This is the main function called at app startup.
+
+    Fetches prices in small batches with a delay between each batch
+    to avoid hitting warframe.market's rate limit (429 errors).
 
     Args:
         progress_callback: Optional function(current, total, item_name)
                           called after each item's price is fetched.
                           Useful for updating a loading bar in the GUI.
+        batch_size:        How many price requests to send at once (default 3).
+        batch_delay:       Seconds to wait between batches (default 1.0).
 
     Returns:
         dict with structure:
@@ -147,27 +169,34 @@ def fetch_all_prices(progress_callback=None):
     grouped = group_into_sets(all_prime_names)
     print(f"Grouped into {len(grouped)} sets.")
 
-    # Step 3: Fetch prices concurrently (8 workers keeps it fast but polite)
-    print("Fetching prices...")
+    # Step 3: Fetch prices in small batches with pauses between each batch.
+    # This keeps us under warframe.market's rate limit.
+    print(f"Fetching prices ({batch_size} at a time, {batch_delay}s between batches)...")
     prices = {}  # item_name → best_buy_price
     completed = 0
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        # Submit a price-fetch job for every prime item
-        future_to_name = {
-            executor.submit(fetch_best_buy_price, name): name
-            for name in all_prime_names
-        }
+    for i in range(0, total, batch_size):
+        batch = all_prime_names[i:i + batch_size]
 
-        # Collect results as they finish (not necessarily in order)
-        for future in as_completed(future_to_name):
-            name = future_to_name[future]
-            price = future.result()
-            prices[name] = price
-            completed += 1
+        # Fetch this batch concurrently
+        with ThreadPoolExecutor(max_workers=len(batch)) as executor:
+            future_to_name = {
+                executor.submit(fetch_best_buy_price, name): name
+                for name in batch
+            }
 
-            if progress_callback:
-                progress_callback(completed, total, name)
+            for future in as_completed(future_to_name):
+                name = future_to_name[future]
+                price = future.result()
+                prices[name] = price
+                completed += 1
+
+                if progress_callback:
+                    progress_callback(completed, total, name)
+
+        # Pause between batches to stay under the rate limit
+        if i + batch_size < total:
+            time.sleep(batch_delay)
 
     # Step 4: Build the final data structure, sorted by prefix and item name
     sets_data = {}
