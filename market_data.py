@@ -299,6 +299,36 @@ def find_sets_from_words(cache_data, ocr_words):
     return results
 
 
+def break_down_set(items):
+    """
+    Given a list of items belonging to one prime set, separate the
+    individual parts from the full set listing and compute the
+    sum of individual part buy prices.
+
+    The GUI uses this to show whether it's cheaper to buy parts
+    individually or as a complete set.
+
+    Returns a dict with:
+        - "parts":      list of individual part items (excludes the Set entry)
+        - "set_item":   the Set entry dict, or None if not found
+        - "parts_sum":  sum of all part best_buy_prices, or None if any are missing
+    """
+    # The set entry has "Set" in the name (e.g. "Rhino Prime Set")
+    parts = [item for item in items if "Set" not in item["name"]]
+    set_item = next((item for item in items if "Set" in item["name"]), None)
+
+    # Sum up part prices — only if every part has a price
+    part_prices = [p["best_buy_price"] for p in parts if p["best_buy_price"] is not None]
+    # If all parts have prices, sum them; otherwise None to indicate incomplete data
+    parts_sum = sum(part_prices) if len(part_prices) == len(parts) else None
+
+    return {
+        "parts": parts,
+        "set_item": set_item,
+        "parts_sum": parts_sum,
+    }
+
+
 # =============================================================================
 # STANDALONE TEST
 # =============================================================================
