@@ -61,13 +61,15 @@ def fetch_all_items():
 
 def fetch_best_buy_price(slug, display_name="", max_retries=3):
     """
-    Fetch the highest online buy order price for a single item.
-    Uses the item's API slug (not a constructed URL) for the request.
+    Fetch the highest online buy order price for a single item
+    using the /top endpoint, which returns the top 5 buy and
+    top 5 sell orders from online users, pre-sorted by price.
 
     Returns the price in platinum, or None if no online buyers exist.
     Retries with exponential backoff if we get rate limited (429).
     """
-    orders_url = f"https://api.warframe.market/v2/items/{slug}/orders"
+    # Correct v2 endpoint: /v2/orders/item/{slug}/top
+    orders_url = f"https://api.warframe.market/v2/orders/item/{slug}/top"
 
     for attempt in range(max_retries + 1):
         try:
@@ -87,15 +89,12 @@ def fetch_best_buy_price(slug, display_name="", max_retries=3):
             response.raise_for_status()
             data = response.json()
 
-            # Only consider buy orders from users who are currently online
-            buy_orders = [
-                order["platinum"]
-                for order in data["data"]["orders"]
-                if order["user"]["status"] != "offline"
-                and order["order_type"] == "buy"
-            ]
+            # The /top endpoint returns: { "buy": [...], "sell": [...] }
+            # Buy orders are sorted by price (highest first)
+            buy_orders = data["data"].get("buy", [])
 
-            return max(buy_orders) if buy_orders else None
+            # First buy order is the best price since they're pre-sorted
+            return buy_orders[0]["platinum"] if buy_orders else None
 
         except Exception as e:
             print(f"  Error fetching price for {display_name} ({slug}): {e}")
@@ -145,6 +144,9 @@ def fetch_all_prices(progress_callback=None, batch_size=3, batch_delay=1.0):
     """
     Fetch all prime items and their best buy prices, grouped by set.
     This is the main function called at app startup.
+
+    Uses the /v2/orders/item/{slug}/top endpoint which returns only
+    the top 5 buy/sell orders per item (much lighter than all orders).
 
     Fetches prices in small batches with a delay between each batch.
     Default of 3 per batch with 1s delay respects the official
@@ -317,7 +319,7 @@ if __name__ == "__main__":
         for item in items:
             price = item["best_buy_price"]
             price_str = f"{price}p" if price is not None else "no buyers"
-            print(f"  {item['name']} ({item['slug']}): {price_str}")
+            print(f"  {item['name']}: {price_str}")
 
     # Quick test: simulate OCR words
     print("\n--- Test OCR match: ['Rhino', 'Galatine', 'garbage'] ---")
