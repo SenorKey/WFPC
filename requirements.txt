@@ -3,6 +3,7 @@ opencv-python
 pytesseract
 numpy
 Pillow
+mss
 
 # System dependency: Tesseract OCR engine (required by pytesseract)
 # macOS: brew install tesseract
