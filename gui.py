@@ -11,6 +11,61 @@ from market_data import (
 )
 
 
+# =============================================================================
+# COLOR PALETTE — centralized so every widget draws from the same set
+# =============================================================================
+
+COLORS = {
+    "bg":           "#2b2b2b",   # main window background
+    "bg_dark":      "#1e1e1e",   # results panel, cards inner area
+    "bg_card":      "#262626",   # card surface (slightly lighter than bg_dark)
+    "bg_title":     "#222222",   # title bar strip
+    "border":       "#FFD700",   # gold — capture border, accents, prices
+    "border_dim":   "#BFA230",   # muted gold for subtle dividers
+    "btn":          "#3a3a3a",   # default button face
+    "btn_hover":    "#4a4a4a",   # button hover state
+    "btn_active":   "#555555",   # button pressed state
+    "btn_primary":  "#4a3a10",   # primary action button (gold-tinted dark)
+    "btn_pri_hov":  "#5c4a18",   # primary button hover
+    "text":         "#cccccc",   # primary text
+    "text_dim":     "#777777",   # secondary/placeholder text
+    "text_muted":   "#999999",   # part names in results
+    "green":        "#88cc88",   # success / totals
+    "red":          "#cc8888",   # errors / warnings
+    "yellow":       "#cccc88",   # in-progress status
+    "separator":    "#333333",   # thin divider lines
+}
+
+
+class HoverButton(tk.Button):
+    """
+    A tk.Button subclass that changes color on mouse enter/leave.
+    Accepts normal_bg, hover_bg, and active_bg for the three states.
+    """
+
+    def __init__(self, master, normal_bg=None, hover_bg=None, active_bg=None, **kwargs):
+        self._normal_bg = normal_bg or COLORS["btn"]
+        self._hover_bg = hover_bg or COLORS["btn_hover"]
+        self._active_bg = active_bg or COLORS["btn_active"]
+
+        super().__init__(
+            master,
+            bg=self._normal_bg,
+            activebackground=self._active_bg,
+            **kwargs,
+        )
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+
+    def _on_enter(self, event):
+        if self["state"] != "disabled":
+            self.config(bg=self._hover_bg)
+
+    def _on_leave(self, event):
+        if self["state"] != "disabled":
+            self.config(bg=self._normal_bg)
+
+
 class WFV74(tk.Tk):
     """
     Main application window with a transparent see-through capture region.
@@ -26,9 +81,9 @@ class WFV74(tk.Tk):
         super().__init__()
 
         self.title("WFV74")
-        self.geometry("750x550")
-        self.minsize(400, 400)
-        self.configure(bg='#2b2b2b')
+        self.geometry("750x580")
+        self.minsize(400, 420)
+        self.configure(bg=COLORS["bg"])
 
         # Tell Windows to make our chosen color fully transparent
         self.wm_attributes('-transparentcolor', self.TRANSPARENT_COLOR)
@@ -47,116 +102,149 @@ class WFV74(tk.Tk):
         # Try to load cached market data on startup
         self._load_cached_data()
 
-    def _build_ui(self):
-        """Build the three sections: capture region, buttons, and results."""
+    # =========================================================================
+    # UI CONSTRUCTION
+    # =========================================================================
 
-        # =====================================================================
-        # CAPTURE REGION — transparent area with a visible gold border
-        # =====================================================================
+    def _build_ui(self):
+        """Build all UI sections: title bar, capture region, buttons, results."""
+
+        self._build_title_bar()
+        self._build_capture_region()
+        self._build_button_bar()
+        self._build_results_panel()
+
+    def _build_title_bar(self):
+        """Top strip with app name and status indicator."""
+
+        title_bar = tk.Frame(self, bg=COLORS["bg_title"], height=36)
+        title_bar.pack(fill='x', padx=0, pady=0)
+        title_bar.pack_propagate(False)  # enforce fixed height
+
+        # Gold diamond accent before the app name
+        tk.Label(
+            title_bar, text="\u25C6",  # ◆ diamond character
+            bg=COLORS["bg_title"], fg=COLORS["border"],
+            font=('Consolas', 10),
+        ).pack(side='left', padx=(12, 4), pady=0)
+
+        # App name
+        tk.Label(
+            title_bar, text="WFV74",
+            bg=COLORS["bg_title"], fg=COLORS["text"],
+            font=('Consolas', 13, 'bold'),
+        ).pack(side='left', padx=(0, 0), pady=0)
+
+        # Subtitle / tagline
+        tk.Label(
+            title_bar, text="warframe.market price check",
+            bg=COLORS["bg_title"], fg=COLORS["text_dim"],
+            font=('Consolas', 9),
+        ).pack(side='left', padx=(8, 0), pady=(2, 0))
+
+        # Status indicator (dot + text) on the right side of title bar
+        self._status_dot = tk.Label(
+            title_bar, text="\u2022",  # • bullet character
+            bg=COLORS["bg_title"], fg=COLORS["text_dim"],
+            font=('Consolas', 14),
+        )
+        self._status_dot.pack(side='right', padx=(0, 10), pady=0)
+
+        self.status_label = tk.Label(
+            title_bar, text="No data loaded",
+            bg=COLORS["bg_title"], fg=COLORS["text_dim"],
+            font=('Consolas', 9), anchor='e',
+        )
+        self.status_label.pack(side='right', padx=(0, 2), pady=0)
+
+    def _build_capture_region(self):
+        """Transparent see-through area with a gold border."""
 
         # Outer frame acts as the colored border around the see-through area
-        self.border_frame = tk.Frame(self, bg='#FFD700')
-        self.border_frame.pack(fill='both', expand=True, padx=8, pady=(8, 4))
+        self.border_frame = tk.Frame(self, bg=COLORS["border"])
+        self.border_frame.pack(fill='both', expand=True, padx=10, pady=(8, 4))
 
         # The label inside is set to the transparent color, so the user
         # can see through it to the game below. After capturing, we swap
         # its background to opaque and show the screenshot image here.
         self.capture_label = tk.Label(self.border_frame, bg=self.TRANSPARENT_COLOR)
-        self.capture_label.pack(fill='both', expand=True, padx=2, pady=2)
+        self.capture_label.pack(fill='both', expand=True, padx=1, pady=1)
 
-        # =====================================================================
-        # BUTTON BAR
-        # =====================================================================
+    def _build_button_bar(self):
+        """Action buttons and controls."""
 
-        button_frame = tk.Frame(self, bg='#2b2b2b')
-        button_frame.pack(fill='x', padx=8, pady=4)
+        button_frame = tk.Frame(self, bg=COLORS["bg"])
+        button_frame.pack(fill='x', padx=10, pady=(4, 4))
 
-        # Take Screenshot — hides window, captures, runs OCR, shows results
-        self.screenshot_btn = tk.Button(
+        # Shared font for all buttons
+        btn_font = ('Consolas', 10)
+
+        # Take Screenshot — primary action, gold-tinted background
+        self.screenshot_btn = HoverButton(
             button_frame,
-            text="Take Screenshot",
+            text="\u25B6  Capture",  # ▶ play symbol
             command=self.on_screenshot,
-            bg='#4a4a4a', fg='white', activebackground='#5a5a5a',
-            font=('Consolas', 11), relief='flat', padx=12, pady=4
+            normal_bg=COLORS["btn_primary"],
+            hover_bg=COLORS["btn_pri_hov"],
+            active_bg=COLORS["btn_active"],
+            fg=COLORS["border"], font=btn_font,
+            relief='flat', padx=14, pady=5,
+            cursor='hand2',
         )
-        self.screenshot_btn.pack(side='left', padx=(0, 5))
+        self.screenshot_btn.pack(side='left', padx=(0, 6))
 
-        # Clear — resets the capture region back to transparent
-        self.clear_btn = tk.Button(
+        # Clear — secondary action
+        self.clear_btn = HoverButton(
             button_frame,
-            text="Clear",
+            text="\u2715  Clear",  # ✕ x-mark
             command=self.on_clear,
-            bg='#4a4a4a', fg='white', activebackground='#5a5a5a',
-            font=('Consolas', 11), relief='flat', padx=12, pady=4
+            fg=COLORS["text"], font=btn_font,
+            relief='flat', padx=14, pady=5,
+            cursor='hand2',
         )
-        self.clear_btn.pack(side='left', padx=(0, 5))
+        self.clear_btn.pack(side='left', padx=(0, 6))
 
-        # Refresh Data — fetches fresh prices from warframe.market
-        self.refresh_btn = tk.Button(
+        # Refresh Data — secondary action
+        self.refresh_btn = HoverButton(
             button_frame,
-            text="Refresh Data",
+            text="\u21BB  Refresh Data",  # ↻ refresh symbol
             command=self.on_refresh_data,
-            bg='#4a4a4a', fg='white', activebackground='#5a5a5a',
-            font=('Consolas', 11), relief='flat', padx=12, pady=4
+            fg=COLORS["text"], font=btn_font,
+            relief='flat', padx=14, pady=5,
+            cursor='hand2',
         )
         self.refresh_btn.pack(side='left')
 
-        # Status label — shows whether market data is loaded
-        self.status_label = tk.Label(
-            button_frame, text="No data loaded",
-            bg='#2b2b2b', fg='#888888',
-            font=('Consolas', 9), anchor='e'
-        )
-        self.status_label.pack(side='right')
+    def _build_results_panel(self):
+        """Scrollable results area at the bottom of the window."""
 
-        # =====================================================================
-        # RESULTS AREA — panel at the bottom to show detected items + prices
-        # =====================================================================
+        # Outer container with a thin gold top-edge accent
+        accent_line = tk.Frame(self, bg=COLORS["border_dim"], height=1)
+        accent_line.pack(fill='x', padx=10, pady=(4, 0))
 
-        self.results_frame = tk.Frame(self, bg='#1e1e1e', height=250)
-        self.results_frame.pack(fill='x', padx=8, pady=(4, 8))
+        self.results_frame = tk.Frame(self, bg=COLORS["bg_dark"], height=250)
+        self.results_frame.pack(fill='x', padx=10, pady=(0, 10))
         self.results_frame.pack_propagate(False)  # enforce fixed height
 
-        # Column headers
-        header_frame = tk.Frame(self.results_frame, bg='#1e1e1e')
-        header_frame.pack(fill='x', padx=12, pady=(10, 0))
+        # Scrollbar sits flush against the right edge
+        scrollbar = tk.Scrollbar(self.results_frame, orient='vertical', troughcolor=COLORS["bg_dark"])
+        scrollbar.pack(side='right', fill='y', pady=6)
 
-        tk.Label(
-            header_frame, text="Item", bg='#1e1e1e', fg='#FFD700',
-            font=('Consolas', 11, 'bold'), anchor='w'
-        ).pack(side='left')
-
-        tk.Label(
-            header_frame, text="Best Buy Price", bg='#1e1e1e', fg='#FFD700',
-            font=('Consolas', 11, 'bold'), anchor='e'
-        ).pack(side='right')
-
-        # Thin separator line under the headers
-        tk.Frame(self.results_frame, bg='#444444', height=1).pack(
-            fill='x', padx=12, pady=(6, 4)
-        )
-
-       # Scrollbar goes directly into results_frame so it sits at the far right edge
-        scrollbar = tk.Scrollbar(self.results_frame, orient='vertical')
-        scrollbar.pack(side='right', fill='y', pady=(0, 8))
-
-        # scroll_container holds only the canvas, leaving the scrollbar outside
-        scroll_container = tk.Frame(self.results_frame, bg='#1e1e1e')
-        scroll_container.pack(fill='both', expand=True, padx=12, pady=(0, 8))
+        # Canvas for scrollable content
+        scroll_container = tk.Frame(self.results_frame, bg=COLORS["bg_dark"])
+        scroll_container.pack(fill='both', expand=True, padx=6, pady=6)
 
         self.results_canvas = tk.Canvas(
-            scroll_container, bg='#1e1e1e', highlightthickness=0
+            scroll_container, bg=COLORS["bg_dark"], highlightthickness=0,
         )
         self.results_canvas.configure(yscrollcommand=scrollbar.set)
         scrollbar.configure(command=self.results_canvas.yview)
+        self.results_canvas.pack(fill='both', expand=True)
 
-        # padx here adds breathing room on both sides of the data
-        self.results_canvas.pack(fill='both', expand=True, padx=6)
-
-        # This is the actual frame widgets are packed into
-        self.results_list = tk.Frame(self.results_canvas, bg='#1e1e1e')
+        # Inner frame that widgets are packed into
+        self.results_list = tk.Frame(self.results_canvas, bg=COLORS["bg_dark"])
         self._results_window = self.results_canvas.create_window(
-            (0, 0), window=self.results_list, anchor='nw'
+            (0, 0), window=self.results_list, anchor='nw',
         )
 
         # Update scroll region whenever the inner frame changes size
@@ -175,6 +263,11 @@ class WFV74(tk.Tk):
     # MARKET DATA
     # =========================================================================
 
+    def _update_status(self, text, color):
+        """Update both the status label text and the dot color together."""
+        self.status_label.config(text=text, fg=color)
+        self._status_dot.config(fg=color)
+
     def _load_cached_data(self):
         """Try to load market data from the JSON cache file on startup."""
         cache = load_cache()
@@ -184,18 +277,15 @@ class WFV74(tk.Tk):
             timestamp = cache.get("timestamp", "unknown")
             # Show just the date portion of the timestamp
             date_str = timestamp[:10] if len(timestamp) >= 10 else timestamp
-            self.status_label.config(
-                text=f"{num_sets} sets loaded ({date_str})",
-                fg='#88cc88'
-            )
+            self._update_status(f"{num_sets} sets loaded ({date_str})", COLORS["green"])
             print(f"Loaded cached market data: {num_sets} sets from {date_str}")
         else:
-            self.status_label.config(text="No data — click Refresh Data", fg='#cc8888')
+            self._update_status("No data \u2014 click Refresh Data", COLORS["red"])
 
     def on_refresh_data(self):
         """Fetch fresh price data from warframe.market in a background thread."""
         self.refresh_btn.config(state='disabled', text='Loading...')
-        self.status_label.config(text="Fetching prices...", fg='#cccc88')
+        self._update_status("Fetching prices...", COLORS["yellow"])
 
         thread = threading.Thread(target=self._fetch_data_thread, daemon=True)
         thread.start()
@@ -204,8 +294,8 @@ class WFV74(tk.Tk):
         """Background thread that fetches all prices (takes a few minutes)."""
         def update_progress(current, total, name):
             # Schedule UI update on the main thread
-            self.after(0, lambda c=current, t=total: self.status_label.config(
-                text=f"Loading: {c}/{t}"
+            self.after(0, lambda c=current, t=total: self._update_status(
+                f"Loading: {c}/{t}", COLORS["yellow"]
             ))
 
         try:
@@ -220,13 +310,13 @@ class WFV74(tk.Tk):
         """Called on the main thread when data fetch completes."""
         self.market_data = cache
         num_sets = len(cache["sets"])
-        self.refresh_btn.config(state='normal', text='Refresh Data')
-        self.status_label.config(text=f"{num_sets} sets loaded (fresh)", fg='#88cc88')
+        self.refresh_btn.config(state='normal', text='\u21BB  Refresh Data')
+        self._update_status(f"{num_sets} sets loaded (fresh)", COLORS["green"])
 
     def _on_data_error(self, error_msg):
         """Called on the main thread if data fetch fails."""
-        self.refresh_btn.config(state='normal', text='Refresh Data')
-        self.status_label.config(text=f"Error: {error_msg[:30]}", fg='#cc8888')
+        self.refresh_btn.config(state='normal', text='\u21BB  Refresh Data')
+        self._update_status(f"Error: {error_msg[:30]}", COLORS["red"])
 
     # =========================================================================
     # SCREENSHOT + OCR
@@ -269,7 +359,7 @@ class WFV74(tk.Tk):
         # Display the captured image in the capture area
         img_display = img.resize((cap_w, cap_h), Image.LANCZOS)
         img_tk = ImageTk.PhotoImage(img_display)
-        self.capture_label.config(image=img_tk, bg='#1e1e1e')
+        self.capture_label.config(image=img_tk, bg=COLORS["bg_dark"])
         self.capture_label.image = img_tk  # prevent garbage collection
 
         # Store the raw captured image
@@ -307,7 +397,7 @@ class WFV74(tk.Tk):
         self.captured_image = None
         self._show_message("Take a screenshot to look up prices.")
 
-# =========================================================================
+    # =========================================================================
     # SCROLL HELPERS
     # =========================================================================
 
@@ -338,22 +428,27 @@ class WFV74(tk.Tk):
     # =========================================================================
 
     def _show_message(self, text):
-        """Show a simple text message in the results area."""
+        """Show a centered placeholder message in the results area."""
         for widget in self.results_list.winfo_children():
             widget.destroy()
 
-        tk.Label(
-            self.results_list, text=text,
-            bg='#1e1e1e', fg='#888888',
-            font=('Consolas', 10), justify='left'
-        ).pack(anchor='w', pady=4)
-        self.results_canvas.yview_moveto(0)  # reset scroll to top
+        # Center the message vertically and horizontally in the panel
+        msg_frame = tk.Frame(self.results_list, bg=COLORS["bg_dark"])
+        msg_frame.pack(fill='both', expand=True, pady=30)
 
+        tk.Label(
+            msg_frame, text=text,
+            bg=COLORS["bg_dark"], fg=COLORS["text_dim"],
+            font=('Consolas', 10), justify='center',
+        ).pack(anchor='center')
+
+        self.results_canvas.yview_moveto(0)
 
     def _display_results(self, matches):
         """
-        Display price results for each matched set, one set per column.
-        Columns are distributed evenly across the available width.
+        Display price results for each matched set inside individual
+        card-style panels, one per column. Each card has its own subtle
+        background to visually separate it from neighboring sets.
         """
         # Clear existing content
         for widget in self.results_list.winfo_children():
@@ -362,66 +457,102 @@ class WFV74(tk.Tk):
         sets = list(matches.items())
         num_cols = len(sets)
 
-        # Make each column share the width equally
+        # Configure grid columns to share width equally
         for col_idx in range(num_cols):
             self.results_list.columnconfigure(col_idx, weight=1, uniform='set_col')
 
         for col_idx, (prefix, items) in enumerate(sets):
             breakdown = break_down_set(items)
 
-            # --- Column frame for this set ---
-            col = tk.Frame(self.results_list, bg='#1e1e1e')
-            col.grid(row=0, column=col_idx, sticky='nsew', padx=(0, 12 if col_idx < num_cols - 1 else 0))
+            # =================================================================
+            # CARD — each set gets a raised card frame with a gold top accent
+            # =================================================================
 
-            # Thin vertical divider between columns (skip for the first)
-            if col_idx > 0:
-                divider = tk.Frame(self.results_list, bg='#333333', width=1)
-                divider.grid(row=0, column=col_idx, sticky='ns', padx=(0, 12))
-                # Shift actual column content past the divider
-                col = tk.Frame(self.results_list, bg='#1e1e1e')
-                col.grid(row=0, column=col_idx, sticky='nsew', padx=(8, 12 if col_idx < num_cols - 1 else 0))
+            # Outer card container provides padding between cards
+            card_pad = tk.Frame(self.results_list, bg=COLORS["bg_dark"])
+            card_pad.grid(
+                row=0, column=col_idx, sticky='nsew',
+                padx=(0 if col_idx == 0 else 4, 0 if col_idx == num_cols - 1 else 4),
+                pady=4,
+            )
+
+            # Thin gold accent along the top edge of the card
+            tk.Frame(card_pad, bg=COLORS["border"], height=2).pack(fill='x')
+
+            # Card body with slightly elevated background
+            card = tk.Frame(card_pad, bg=COLORS["bg_card"])
+            card.pack(fill='both', expand=True)
 
             # --- Set header (e.g. "Rhino Prime") ---
+            header_frame = tk.Frame(card, bg=COLORS["bg_card"])
+            header_frame.pack(fill='x', padx=10, pady=(10, 2))
+
             tk.Label(
-                col, text=f"{prefix} Prime",
-                bg='#1e1e1e', fg='#FFD700',
-                font=('Consolas', 10, 'bold'), anchor='w'
-            ).pack(fill='x', pady=(6, 2))
+                header_frame, text=f"{prefix} Prime",
+                bg=COLORS["bg_card"], fg=COLORS["border"],
+                font=('Consolas', 11, 'bold'), anchor='w',
+            ).pack(side='left')
+
+            # Small "Buy" column header aligned right
+            tk.Label(
+                header_frame, text="Buy",
+                bg=COLORS["bg_card"], fg=COLORS["text_dim"],
+                font=('Consolas', 8), anchor='e',
+            ).pack(side='right')
+
+            # Separator under header
+            tk.Frame(card, bg=COLORS["separator"], height=1).pack(
+                fill='x', padx=10, pady=(4, 4),
+            )
 
             # --- Individual parts ---
             for part in breakdown["parts"]:
                 price = part["best_buy_price"]
-                price_str = f"{price}p" if price is not None else "—"
+                price_str = f"{price}p" if price is not None else "\u2014"
+                # Strip the "Prefix Prime " from the front to get just "Chassis", "Blade", etc.
                 short_name = part["name"].replace(f"{prefix} Prime ", "")
-                self._add_result_row(col, f"  {short_name}", price_str, fg='#aaaaaa')
+                self._add_result_row(card, short_name, price_str, fg=COLORS["text_muted"])
 
-            # --- Separator ---
-            tk.Frame(col, bg='#333333', height=1).pack(fill='x', pady=2)
+            # Separator before totals
+            tk.Frame(card, bg=COLORS["separator"], height=1).pack(
+                fill='x', padx=10, pady=(6, 4),
+            )
 
             # --- Parts total ---
             parts_sum = breakdown["parts_sum"]
-            sum_str = f"{parts_sum}p" if parts_sum is not None else "—"
-            self._add_result_row(col, "  Parts total", sum_str, fg='#88cc88')
+            sum_str = f"{parts_sum}p" if parts_sum is not None else "\u2014"
+            self._add_result_row(card, "Parts total", sum_str, fg=COLORS["green"], bold=True)
 
             # --- Set price ---
             if breakdown["set_item"]:
                 set_price = breakdown["set_item"]["best_buy_price"]
-                set_str = f"{set_price}p" if set_price is not None else "—"
-                self._add_result_row(col, "  Set price", set_str, fg='#88cc88')
+                set_str = f"{set_price}p" if set_price is not None else "\u2014"
+                self._add_result_row(card, "Set price", set_str, fg=COLORS["green"], bold=True)
 
-    def _add_result_row(self, parent, name, price, fg='#aaaaaa'):
-        """Add a single name/price row to the given parent column frame."""
-        row = tk.Frame(parent, bg='#1e1e1e')
-        row.pack(fill='x', pady=1)
+            # Bottom padding inside the card
+            tk.Frame(card, bg=COLORS["bg_card"], height=6).pack()
+
+        # Reset scroll position to the top
+        self.results_canvas.yview_moveto(0)
+
+    def _add_result_row(self, parent, name, price, fg=COLORS["text_muted"], bold=False):
+        """Add a single name → price row inside a card."""
+        row = tk.Frame(parent, bg=COLORS["bg_card"])
+        row.pack(fill='x', padx=10, pady=2)
+
+        name_font = ('Consolas', 10, 'bold') if bold else ('Consolas', 10)
 
         tk.Label(
-            row, text=name, bg='#1e1e1e', fg=fg,
-            font=('Consolas', 10), anchor='w'
+            row, text=name,
+            bg=COLORS["bg_card"], fg=fg,
+            font=name_font, anchor='w',
         ).pack(side='left')
 
+        # Price always in gold, bold for emphasis
         tk.Label(
-            row, text=price, bg='#1e1e1e', fg='#FFD700',
-            font=('Consolas', 10, 'bold'), anchor='e'
+            row, text=price,
+            bg=COLORS["bg_card"], fg=COLORS["border"],
+            font=('Consolas', 10, 'bold'), anchor='e',
         ).pack(side='right')
 
 
