@@ -350,54 +350,66 @@ class WFV74(tk.Tk):
 
     def _display_results(self, matches):
         """
-        Display price results for each matched set.
-        Shows individual parts, a parts total, and the set price
-        so the user can compare selling individually vs as a set.
+        Display price results for each matched set, one set per column.
+        Columns are distributed evenly across the available width.
         """
         # Clear existing content
         for widget in self.results_list.winfo_children():
             widget.destroy()
 
-        for prefix, items in matches.items():
+        sets = list(matches.items())
+        num_cols = len(sets)
+
+        # Make each column share the width equally
+        for col_idx in range(num_cols):
+            self.results_list.columnconfigure(col_idx, weight=1, uniform='set_col')
+
+        for col_idx, (prefix, items) in enumerate(sets):
             breakdown = break_down_set(items)
 
+            # --- Column frame for this set ---
+            col = tk.Frame(self.results_list, bg='#1e1e1e')
+            col.grid(row=0, column=col_idx, sticky='nsew', padx=(0, 12 if col_idx < num_cols - 1 else 0))
+
+            # Thin vertical divider between columns (skip for the first)
+            if col_idx > 0:
+                divider = tk.Frame(self.results_list, bg='#333333', width=1)
+                divider.grid(row=0, column=col_idx, sticky='ns', padx=(0, 12))
+                # Shift actual column content past the divider
+                col = tk.Frame(self.results_list, bg='#1e1e1e')
+                col.grid(row=0, column=col_idx, sticky='nsew', padx=(8, 12 if col_idx < num_cols - 1 else 0))
+
             # --- Set header (e.g. "Rhino Prime") ---
-            header = tk.Label(
-                self.results_list, text=f"{prefix} Prime",
+            tk.Label(
+                col, text=f"{prefix} Prime",
                 bg='#1e1e1e', fg='#FFD700',
                 font=('Consolas', 10, 'bold'), anchor='w'
-            )
-            header.pack(fill='x', pady=(6, 2))
+            ).pack(fill='x', pady=(6, 2))
 
             # --- Individual parts ---
             for part in breakdown["parts"]:
                 price = part["best_buy_price"]
                 price_str = f"{price}p" if price is not None else "—"
-                # Strip the prefix and " Prime " to keep names short
                 short_name = part["name"].replace(f"{prefix} Prime ", "")
-                self._add_result_row(f"  {short_name}", price_str, fg='#aaaaaa')
+                self._add_result_row(col, f"  {short_name}", price_str, fg='#aaaaaa')
 
             # --- Separator ---
-            tk.Frame(self.results_list, bg='#333333', height=1).pack(
-                fill='x', pady=2
-            )
+            tk.Frame(col, bg='#333333', height=1).pack(fill='x', pady=2)
 
             # --- Parts total ---
             parts_sum = breakdown["parts_sum"]
             sum_str = f"{parts_sum}p" if parts_sum is not None else "—"
-            self._add_result_row("  Parts total", sum_str, fg='#88cc88')
+            self._add_result_row(col, "  Parts total", sum_str, fg='#88cc88')
 
             # --- Set price ---
             if breakdown["set_item"]:
                 set_price = breakdown["set_item"]["best_buy_price"]
                 set_str = f"{set_price}p" if set_price is not None else "—"
-                self._add_result_row("  Set price", set_str, fg='#88cc88')
-        self.results_canvas.yview_moveto(0)  # reset scroll to top after new results
+                self._add_result_row(col, "  Set price", set_str, fg='#88cc88')
 
-
-    def _add_result_row(self, name, price, fg='#aaaaaa'):
-        """Add a single name/price row to the results area."""
-        row = tk.Frame(self.results_list, bg='#1e1e1e')
+    def _add_result_row(self, parent, name, price, fg='#aaaaaa'):
+        """Add a single name/price row to the given parent column frame."""
+        row = tk.Frame(parent, bg='#1e1e1e')
         row.pack(fill='x', pady=1)
 
         tk.Label(
