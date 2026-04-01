@@ -34,6 +34,10 @@ COLORS = {
     "red":          "#cc8888",   # errors / warnings
     "yellow":       "#cccc88",   # in-progress status
     "separator":    "#333333",   # thin divider lines
+    "hl_blue":      "#1a2a4a",   # subtle blue highlight for best set price
+    "hl_green":     "#1a3a1a",   # subtle green highlight for best parts total
+    "btn_close":    "#4a2020",   # close button (dark red-tinted)
+    "btn_close_hov":"#5c2828",   # close button hover
 }
 
 
@@ -214,6 +218,20 @@ class WFV74(tk.Tk):
             cursor='hand2',
         )
         self.refresh_btn.pack(side='left')
+
+        # Close — safely terminates the application, packed to the far right
+        self.close_btn = HoverButton(
+            button_frame,
+            text="\u2716  Close",  # ✖ heavy x-mark
+            command=self._on_close,
+            normal_bg=COLORS["btn_close"],
+            hover_bg=COLORS["btn_close_hov"],
+            active_bg=COLORS["btn_active"],
+            fg=COLORS["red"], font=btn_font,
+            relief='flat', padx=14, pady=5,
+            cursor='hand2',
+        )
+        self.close_btn.pack(side='right')
 
     def _build_results_panel(self):
         """Scrollable results area at the bottom of the window."""
@@ -397,6 +415,10 @@ class WFV74(tk.Tk):
         self.captured_image = None
         self._show_message("Take a screenshot to look up prices.")
 
+    def _on_close(self):
+        """Safely terminate the application and clean up resources."""
+        self.destroy()
+
     # =========================================================================
     # SCROLL HELPERS
     # =========================================================================
@@ -447,8 +469,8 @@ class WFV74(tk.Tk):
     def _display_results(self, matches):
         """
         Display price results for each matched set inside individual
-        card-style panels, one per column. Each card has its own subtle
-        background to visually separate it from neighboring sets.
+        card-style panels, one per column. After building all cards,
+        highlight the highest set price (blue) and highest parts total (green).
         """
         # Clear existing content
         for widget in self.results_list.winfo_children():
@@ -460,6 +482,11 @@ class WFV74(tk.Tk):
         # Configure grid columns to share width equally
         for col_idx in range(num_cols):
             self.results_list.columnconfigure(col_idx, weight=1, uniform='set_col')
+
+        # Track rows and their numeric values so we can highlight the best ones
+        # Each entry is (numeric_price, row_frame)
+        set_price_rows = []
+        parts_total_rows = []
 
         for col_idx, (prefix, items) in enumerate(sets):
             breakdown = break_down_set(items)
@@ -521,22 +548,45 @@ class WFV74(tk.Tk):
             # --- Parts total ---
             parts_sum = breakdown["parts_sum"]
             sum_str = f"{parts_sum}p" if parts_sum is not None else "\u2014"
-            self._add_result_row(card, "Parts total", sum_str, fg=COLORS["green"], bold=True)
+            row = self._add_result_row(card, "Parts total", sum_str, fg=COLORS["green"], bold=True)
+            # Track this row for highlighting if it has a valid numeric total
+            if parts_sum is not None:
+                parts_total_rows.append((parts_sum, row))
 
             # --- Set price ---
             if breakdown["set_item"]:
                 set_price = breakdown["set_item"]["best_buy_price"]
                 set_str = f"{set_price}p" if set_price is not None else "\u2014"
-                self._add_result_row(card, "Set price", set_str, fg=COLORS["green"], bold=True)
+                row = self._add_result_row(card, "Set price", set_str, fg=COLORS["green"], bold=True)
+                # Track this row for highlighting if it has a valid price
+                if set_price is not None:
+                    set_price_rows.append((set_price, row))
 
             # Bottom padding inside the card
             tk.Frame(card, bg=COLORS["bg_card"], height=6).pack()
+
+        # =================================================================
+        # HIGHLIGHT — apply subtle backgrounds to the best-value rows
+        # =================================================================
+
+        # Highlight the highest set price in blue (even if there's only one)
+        if set_price_rows:
+            best_set = max(set_price_rows, key=lambda x: x[0])
+            self._highlight_row(best_set[1], COLORS["hl_blue"])
+
+        # Highlight the highest parts total in green (even if there's only one)
+        if parts_total_rows:
+            best_total = max(parts_total_rows, key=lambda x: x[0])
+            self._highlight_row(best_total[1], COLORS["hl_green"])
 
         # Reset scroll position to the top
         self.results_canvas.yview_moveto(0)
 
     def _add_result_row(self, parent, name, price, fg=COLORS["text_muted"], bold=False):
-        """Add a single name → price row inside a card."""
+        """
+        Add a single name → price row inside a card.
+        Returns the row frame so callers can highlight it later.
+        """
         row = tk.Frame(parent, bg=COLORS["bg_card"])
         row.pack(fill='x', padx=10, pady=2)
 
@@ -554,6 +604,18 @@ class WFV74(tk.Tk):
             bg=COLORS["bg_card"], fg=COLORS["border"],
             font=('Consolas', 10, 'bold'), anchor='e',
         ).pack(side='right')
+
+        return row
+
+    def _highlight_row(self, row_frame, bg_color):
+        """
+        Apply a subtle background highlight to a result row.
+        Updates the row frame and all its child labels so the
+        color is consistent across the entire row.
+        """
+        row_frame.config(bg=bg_color)
+        for child in row_frame.winfo_children():
+            child.config(bg=bg_color)
 
 
 # Allow running the GUI directly for testing
