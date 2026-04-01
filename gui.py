@@ -136,9 +136,35 @@ class WFV74(tk.Tk):
             fill='x', padx=12, pady=(6, 4)
         )
 
-        # Scrollable container for the actual result rows
-        self.results_list = tk.Frame(self.results_frame, bg='#1e1e1e')
-        self.results_list.pack(fill='both', expand=True, padx=12, pady=(0, 8))
+        # Scrollable canvas + scrollbar for result rows
+        scroll_container = tk.Frame(self.results_frame, bg='#1e1e1e')
+        scroll_container.pack(fill='both', expand=True, padx=12, pady=(0, 8))
+
+        self.results_canvas = tk.Canvas(
+            scroll_container, bg='#1e1e1e', highlightthickness=0
+        )
+        scrollbar = tk.Scrollbar(
+            scroll_container, orient='vertical', command=self.results_canvas.yview
+        )
+        self.results_canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side='right', fill='y')
+        self.results_canvas.pack(side='left', fill='both', expand=True)
+
+        # This is the actual frame widgets are packed into
+        self.results_list = tk.Frame(self.results_canvas, bg='#1e1e1e')
+        self._results_window = self.results_canvas.create_window(
+            (0, 0), window=self.results_list, anchor='nw'
+        )
+
+        # Update scroll region whenever the inner frame changes size
+        self.results_list.bind('<Configure>', self._on_results_configure)
+        # Keep inner frame width matched to canvas width
+        self.results_canvas.bind('<Configure>', self._on_canvas_configure)
+
+        # Bind mousewheel scrolling when hovering over the results area
+        self.results_canvas.bind('<Enter>', self._bind_mousewheel)
+        self.results_canvas.bind('<Leave>', self._unbind_mousewheel)
 
         # Show placeholder on first launch
         self._show_message("Take a screenshot to look up prices.")
@@ -279,6 +305,32 @@ class WFV74(tk.Tk):
         self.captured_image = None
         self._show_message("Take a screenshot to look up prices.")
 
+# =========================================================================
+    # SCROLL HELPERS
+    # =========================================================================
+
+    def _on_results_configure(self, event):
+        """Update the canvas scroll region when the inner frame resizes."""
+        self.results_canvas.configure(
+            scrollregion=self.results_canvas.bbox('all')
+        )
+
+    def _on_canvas_configure(self, event):
+        """Keep the inner results frame as wide as the canvas."""
+        self.results_canvas.itemconfig(self._results_window, width=event.width)
+
+    def _bind_mousewheel(self, event):
+        """Start capturing mousewheel events when the cursor enters the results area."""
+        self.results_canvas.bind_all('<MouseWheel>', self._on_mousewheel)
+
+    def _unbind_mousewheel(self, event):
+        """Stop capturing mousewheel events when the cursor leaves."""
+        self.results_canvas.unbind_all('<MouseWheel>')
+
+    def _on_mousewheel(self, event):
+        """Scroll the results canvas on mousewheel movement."""
+        self.results_canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
+
     # =========================================================================
     # RESULTS DISPLAY
     # =========================================================================
@@ -293,6 +345,8 @@ class WFV74(tk.Tk):
             bg='#1e1e1e', fg='#888888',
             font=('Consolas', 10), justify='left'
         ).pack(anchor='w', pady=4)
+        self.results_canvas.yview_moveto(0)  # reset scroll to top
+
 
     def _display_results(self, matches):
         """
@@ -338,6 +392,8 @@ class WFV74(tk.Tk):
                 set_price = breakdown["set_item"]["best_buy_price"]
                 set_str = f"{set_price}p" if set_price is not None else "—"
                 self._add_result_row("  Set price", set_str, fg='#88cc88')
+        self.results_canvas.yview_moveto(0)  # reset scroll to top after new results
+
 
     def _add_result_row(self, name, price, fg='#aaaaaa'):
         """Add a single name/price row to the results area."""
