@@ -136,20 +136,22 @@ class WFV74(tk.Tk):
             fill='x', padx=12, pady=(6, 4)
         )
 
-        # Scrollable canvas + scrollbar for result rows
+       # Scrollbar goes directly into results_frame so it sits at the far right edge
+        scrollbar = tk.Scrollbar(self.results_frame, orient='vertical')
+        scrollbar.pack(side='right', fill='y', pady=(0, 8))
+
+        # scroll_container holds only the canvas, leaving the scrollbar outside
         scroll_container = tk.Frame(self.results_frame, bg='#1e1e1e')
         scroll_container.pack(fill='both', expand=True, padx=12, pady=(0, 8))
 
         self.results_canvas = tk.Canvas(
             scroll_container, bg='#1e1e1e', highlightthickness=0
         )
-        scrollbar = tk.Scrollbar(
-            scroll_container, orient='vertical', command=self.results_canvas.yview
-        )
         self.results_canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.configure(command=self.results_canvas.yview)
 
-        scrollbar.pack(side='right', fill='y')
-        self.results_canvas.pack(side='left', fill='both', expand=True)
+        # padx here adds breathing room on both sides of the data
+        self.results_canvas.pack(fill='both', expand=True, padx=6)
 
         # This is the actual frame widgets are packed into
         self.results_list = tk.Frame(self.results_canvas, bg='#1e1e1e')
