@@ -14,7 +14,7 @@ HEADERS = {
     "Language": "en",
     "Platform": "pc",
     "Crossplay": "true",
-    "User-Agent": "WFV74"
+    "User-Agent": "WFPC"
 }
 
 

@@ -8,7 +8,7 @@ def get_prime_items():
         "Language": "en",
         "Platform": "pc",
         "Crossplay": "true",
-        "User-Agent": "WFV74"
+        "User-Agent": "WFPC"
     }
     response = requests.get(url, headers=headers)
     response.raise_for_status()

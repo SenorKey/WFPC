@@ -7,7 +7,7 @@ def get_price(item_url):
         "Language": "en",
         "Platform": "pc",
         "Crossplay": "true",
-        "User-Agent": "WFV74"
+        "User-Agent": "WFPC"
     }
     response = requests.get(orders_url, headers=headers)
     response.raise_for_status()

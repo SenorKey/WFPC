@@ -70,7 +70,7 @@ class HoverButton(tk.Button):
             self.config(bg=self._normal_bg)
 
 
-class WFV74(tk.Tk):
+class WFPC(tk.Tk):
     """
     Main application window with a transparent see-through capture region.
     The user positions this window so the transparent area overlays the
@@ -84,7 +84,7 @@ class WFV74(tk.Tk):
     def __init__(self):
         super().__init__()
 
-        self.title("WFV74")
+        self.title("WFPC")
         self.geometry("750x580")
         self.minsize(400, 420)
         self.configure(bg=COLORS["bg"])
@@ -134,7 +134,7 @@ class WFV74(tk.Tk):
 
         # App name
         tk.Label(
-            title_bar, text="WFV74",
+            title_bar, text="WFPC",
             bg=COLORS["bg_title"], fg=COLORS["text"],
             font=('Consolas', 13, 'bold'),
         ).pack(side='left', padx=(0, 0), pady=0)
@@ -621,5 +621,5 @@ class WFV74(tk.Tk):
 
 # Allow running the GUI directly for testing
 if __name__ == "__main__":
-    app = WFV74()
+    app = WFPC()
     app.mainloop()

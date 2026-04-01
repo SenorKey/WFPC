@@ -23,8 +23,8 @@ def take_screenshot():
         img = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
         img_tk = ImageTk.PhotoImage(img)
 
-        file_path = "C:/Users/senor/PycharmProjects/WFV74/screenshot_test9.png"
-        # file_path2 = "C:/Users/senor/PycharmProjects/WFV74/screenshot_test4.png"
+        file_path = "C:/Users/senor/PycharmProjects/WFPC/screenshot_test9.png"
+        # file_path2 = "C:/Users/senor/PycharmProjects/WFPC/screenshot_test4.png"
 
         img.save(file_path)
         # img.save(file_path2)

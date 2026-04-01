@@ -1,4 +1,4 @@
-from gui import WFV74
+from gui import WFPC
 
-app = WFV74()
+app = WFPC()
 app.mainloop()
