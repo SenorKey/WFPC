@@ -180,8 +180,9 @@ class WFV74(tk.Tk):
         button_frame = tk.Frame(self, bg=COLORS["bg"])
         button_frame.pack(fill='x', padx=10, pady=(4, 4))
 
-        # Shared font for all buttons
-        btn_font = ('Consolas', 10)
+        # Segoe UI for buttons — proportional sans-serif contrasts with
+        # the monospace Consolas used in the data/results section
+        btn_font = ('Segoe UI', 10)
 
         # Take Screenshot — primary action, gold-tinted background
         self.screenshot_btn = HoverButton(
