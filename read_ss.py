@@ -3,6 +3,14 @@ import pytesseract
 import numpy as np
 import unicodedata
 
+import sys
+import os
+
+# When running from a PyInstaller bundle, Tesseract is packed
+# inside the temp extraction folder alongside the exe
+if getattr(sys, 'frozen', False):
+    base = sys._MEIPASS
+    pytesseract.pytesseract.tesseract_cmd = os.path.join(base, "tesseract", "tesseract.exe")
 
 def remove_accents(text):
     """
