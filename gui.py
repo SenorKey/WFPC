@@ -1,15 +1,7 @@
 import tkinter as tk
 from PIL import Image, ImageTk
-import mss
-import time
-import threading
-from datetime import datetime
 
-from read_ss import extract_words
-from market_data import (
-    fetch_all_prices, save_cache, load_cache,
-    find_sets_from_words, break_down_set
-)
+from market_data import break_down_set
 
 
 # =============================================================================
@@ -75,8 +67,9 @@ class WFPC(tk.Tk):
     """
     Main application window with a transparent see-through capture region.
     The user positions this window so the transparent area overlays the
-    in-game relic reward screen, then clicks 'Take Screenshot' to capture,
-    OCR the item names, and display prices from warframe.market.
+    in-game relic reward screen. Button clicks are forwarded to the
+    AppController, which handles all workflow logic and calls back into
+    the GUI's display methods to update what the user sees.
     """
 
     # Windows will render this exact color as fully transparent (see-through)
@@ -96,16 +89,14 @@ class WFPC(tk.Tk):
         # Keep the window above the game so the overlay is always visible
         self.wm_attributes('-topmost', True)
 
-        # Will hold the captured PIL image for OCR processing
-        self.captured_image = None
-
-        # Will hold the cached market data (loaded from JSON or fetched fresh)
-        self.market_data = None
+        # Controller is set after construction via set_controller()
+        self.controller = None
 
         self._build_ui()
 
-        # Try to load cached market data on startup
-        self._load_cached_data()
+    def set_controller(self, controller):
+        """Connect the controller after both GUI and controller are created."""
+        self.controller = controller
 
     # =========================================================================
     # UI CONSTRUCTION
@@ -189,7 +180,7 @@ class WFPC(tk.Tk):
         self.screenshot_btn = HoverButton(
             button_frame,
             text="\u25B6  Capture",  # ▶ play symbol
-            command=self.on_screenshot,
+            command=lambda: self.controller.capture_screenshot(),
             normal_bg=COLORS["btn_primary"],
             hover_bg=COLORS["btn_pri_hov"],
             active_bg=COLORS["btn_active"],
@@ -203,7 +194,7 @@ class WFPC(tk.Tk):
         self.clear_btn = HoverButton(
             button_frame,
             text="\u2715  Clear",  # ✕ x-mark
-            command=self.on_clear,
+            command=lambda: self.controller.clear_capture(),
             fg=COLORS["text"], font=btn_font,
             relief='flat', padx=14, pady=5,
             cursor='hand2',
@@ -214,7 +205,7 @@ class WFPC(tk.Tk):
         self.refresh_btn = HoverButton(
             button_frame,
             text="\u21BB  Refresh Data",  # ↻ refresh symbol
-            command=self.on_refresh_data,
+            command=lambda: self.controller.refresh_data(),
             fg=COLORS["text"], font=btn_font,
             relief='flat', padx=14, pady=5,
             cursor='hand2',
@@ -277,205 +268,55 @@ class WFPC(tk.Tk):
         self.results_canvas.bind('<Leave>', self._unbind_mousewheel)
 
         # Show placeholder on first launch
-        self._show_message("Take a screenshot to look up prices.")
+        self.show_message("Take a screenshot to look up prices.")
 
     # =========================================================================
-    # MARKET DATA
+    # PUBLIC DISPLAY METHODS — called by the controller
     # =========================================================================
 
-    def _update_status(self, text, color):
-        """Update both the status label text and the dot color together."""
+    def update_status(self, text, color_key):
+        """
+        Update both the status label text and the dot color.
+        color_key is a string like 'green', 'yellow', 'red' that maps
+        to a color in the COLORS dict.
+        """
+        color = COLORS[color_key]
         self.status_label.config(text=text, fg=color)
         self._status_dot.config(fg=color)
 
-    def _load_cached_data(self):
-        """Try to load market data from the JSON cache file on startup."""
-        cache = load_cache()
-        if cache:
-            self.market_data = cache
-            num_sets = len(cache["sets"])
-            timestamp = cache.get("timestamp", "unknown")
-            # Show just the date portion of the timestamp
-            date_str = timestamp[:10] if len(timestamp) >= 10 else timestamp
+    def set_capture_busy(self, busy):
+        """Disable or re-enable the capture button."""
+        self.screenshot_btn.config(state='disabled' if busy else 'normal')
 
-            # Check if the cache is older than 7 days and warn the user
-            try:
-                cache_time = datetime.fromisoformat(timestamp)
-                age_days = (datetime.now() - cache_time).days
-                if age_days >= 7:
-                    # ⚠ caution symbol + yellow text to draw attention
-                    self._update_status(
-                        f"\u26A0 {num_sets} sets loaded ({date_str}) \u2014 {age_days}d old",
-                        COLORS["yellow"]
-                    )
-                else:
-                    self._update_status(f"{num_sets} sets loaded ({date_str})", COLORS["green"])
-            except (ValueError, TypeError):
-                # If the timestamp is malformed, just show it normally
-                self._update_status(f"{num_sets} sets loaded ({date_str})", COLORS["green"])
-
-            print(f"Loaded cached market data: {num_sets} sets from {date_str}")
+    def set_refresh_busy(self, busy):
+        """Disable or re-enable the refresh button and update its label."""
+        if busy:
+            self.refresh_btn.config(state='disabled', text='Loading...')
         else:
-            self._update_status("No data \u2014 click Refresh Data", COLORS["red"])
+            self.refresh_btn.config(state='normal', text='\u21BB  Refresh Data')
 
-    def on_refresh_data(self):
-        """Fetch fresh price data from warframe.market in a background thread."""
-        self.refresh_btn.config(state='disabled', text='Loading...')
-        self._update_status("Fetching prices...", COLORS["yellow"])
+    def get_capture_geometry(self):
+        """Return (x, y, width, height) of the capture label in screen coordinates."""
+        return (
+            self.capture_label.winfo_rootx(),
+            self.capture_label.winfo_rooty(),
+            self.capture_label.winfo_width(),
+            self.capture_label.winfo_height(),
+        )
 
-        thread = threading.Thread(target=self._fetch_data_thread, daemon=True)
-        thread.start()
-
-    def _fetch_data_thread(self):
-        """Background thread that fetches all prices (takes a few minutes)."""
-        def update_progress(current, total, name):
-            # Schedule UI update on the main thread
-            self.after(0, lambda c=current, t=total: self._update_status(
-                f"Loading: {c}/{t}", COLORS["yellow"]
-            ))
-
-        try:
-            cache = fetch_all_prices(progress_callback=update_progress)
-            save_cache(cache)
-            # Schedule the final UI update on the main thread
-            self.after(0, lambda: self._on_data_loaded(cache))
-        except Exception as e:
-            self.after(0, lambda: self._on_data_error(str(e)))
-
-    def _on_data_loaded(self, cache):
-        """Called on the main thread when data fetch completes."""
-        self.market_data = cache
-        num_sets = len(cache["sets"])
-        self.refresh_btn.config(state='normal', text='\u21BB  Refresh Data')
-        self._update_status(f"{num_sets} sets loaded (fresh)", COLORS["green"])
-
-    def _on_data_error(self, error_msg):
-        """Called on the main thread if data fetch fails."""
-        self.refresh_btn.config(state='normal', text='\u21BB  Refresh Data')
-        self._update_status(f"Error: {error_msg[:30]}", COLORS["red"])
-
-    # =========================================================================
-    # SCREENSHOT + OCR
-    # =========================================================================
-
-    def on_screenshot(self):
-        """
-        Capture the screen region behind the transparent area,
-        run OCR on it, look up matching sets, and display prices.
-        """
-        # Disable the button so rapid clicks can't start overlapping captures
-        self.screenshot_btn.config(state='disabled')
-
-        # Finalize layout so winfo coordinates are accurate
-        self.update_idletasks()
-
-        # Get the screen-absolute position and size of the capture label
-        cap_x = self.capture_label.winfo_rootx()
-        cap_y = self.capture_label.winfo_rooty()
-        cap_w = self.capture_label.winfo_width()
-        cap_h = self.capture_label.winfo_height()
-
-        # Hide the window so we capture the game underneath, not ourselves.
-        # The try/finally ensures the window always comes back, even if
-        # the screenshot or OCR step crashes unexpectedly.
-        self.withdraw()
-        self.update()
-        time.sleep(0.15)  # small delay for the OS to finish hiding the window
-
-        try:
-            # Grab the screen region where our transparent area was
-            with mss.mss() as sct:
-                region = {
-                    "left": cap_x,
-                    "top": cap_y,
-                    "width": cap_w,
-                    "height": cap_h,
-                }
-                raw = sct.grab(region)
-                img = Image.frombytes("RGB", raw.size, raw.rgb)
-        finally:
-            # No matter what happens above, bring the window back
-            self.deiconify()
-            self.update()
-            # Re-enable the capture button
-            self.screenshot_btn.config(state='normal')
-
-        # Display the captured image in the capture area
-        img_display = img.resize((cap_w, cap_h), Image.LANCZOS)
+    def show_captured_image(self, pil_image, width, height):
+        """Display a captured PIL image inside the capture region."""
+        img_display = pil_image.resize((width, height), Image.LANCZOS)
         img_tk = ImageTk.PhotoImage(img_display)
         self.capture_label.config(image=img_tk, bg=COLORS["bg_dark"])
         self.capture_label.image = img_tk  # prevent garbage collection
 
-        # Store the raw captured image
-        self.captured_image = img
-
-        print(f"Captured {cap_w}x{cap_h} region at ({cap_x}, {cap_y})")
-
-        # Run OCR and look up prices if market data is loaded
-        if self.market_data:
-            self._process_screenshot(img)
-        else:
-            self._show_message("No market data loaded.\nClick 'Refresh Data' first.")
-
-    def _process_screenshot(self, pil_image):
-        """Run OCR on the captured image and display matching set prices."""
-        # Extract words from the screenshot via OCR
-        words = extract_words(pil_image)
-        print(f"OCR words: {words}")
-
-        # Find which prime sets match any of the OCR words
-        matches = find_sets_from_words(self.market_data, words)
-
-        if matches:
-            self._display_results(matches)
-        else:
-            self._show_message(
-                "No prime items recognized.\n"
-                f"OCR read: {' '.join(words[:15])}"
-            )
-
-    def on_clear(self):
-        """Reset the capture region back to transparent for repositioning."""
+    def reset_capture_region(self):
+        """Set the capture region back to transparent for repositioning."""
         self.capture_label.config(image='', bg=self.TRANSPARENT_COLOR)
         self.capture_label.image = None
-        self.captured_image = None
-        self._show_message("Take a screenshot to look up prices.")
 
-    def _on_close(self):
-        """Safely terminate the application and clean up resources."""
-        self.destroy()
-
-    # =========================================================================
-    # SCROLL HELPERS
-    # =========================================================================
-
-    def _on_results_configure(self, event):
-        """Update the canvas scroll region when the inner frame resizes."""
-        self.results_canvas.configure(
-            scrollregion=self.results_canvas.bbox('all')
-        )
-
-    def _on_canvas_configure(self, event):
-        """Keep the inner results frame as wide as the canvas."""
-        self.results_canvas.itemconfig(self._results_window, width=event.width)
-
-    def _bind_mousewheel(self, event):
-        """Start capturing mousewheel events when the cursor enters the results area."""
-        self.results_canvas.bind_all('<MouseWheel>', self._on_mousewheel)
-
-    def _unbind_mousewheel(self, event):
-        """Stop capturing mousewheel events when the cursor leaves."""
-        self.results_canvas.unbind_all('<MouseWheel>')
-
-    def _on_mousewheel(self, event):
-        """Scroll the results canvas on mousewheel movement."""
-        self.results_canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
-
-    # =========================================================================
-    # RESULTS DISPLAY
-    # =========================================================================
-
-    def _show_message(self, text):
+    def show_message(self, text):
         """Show a centered placeholder message in the results area."""
         for widget in self.results_list.winfo_children():
             widget.destroy()
@@ -492,7 +333,7 @@ class WFPC(tk.Tk):
 
         self.results_canvas.yview_moveto(0)
 
-    def _display_results(self, matches):
+    def display_results(self, matches):
         """
         Display price results for each matched set inside individual
         card-style panels, one per column. After building all cards,
@@ -608,6 +449,14 @@ class WFPC(tk.Tk):
         # Reset scroll position to the top
         self.results_canvas.yview_moveto(0)
 
+    # =========================================================================
+    # PRIVATE HELPERS
+    # =========================================================================
+
+    def _on_close(self):
+        """Safely terminate the application and clean up resources."""
+        self.destroy()
+
     def _add_result_row(self, parent, name, price, fg=COLORS["text_muted"], bold=False):
         """
         Add a single name → price row inside a card.
@@ -643,8 +492,38 @@ class WFPC(tk.Tk):
         for child in row_frame.winfo_children():
             child.config(bg=bg_color)
 
+    # =========================================================================
+    # SCROLL HELPERS
+    # =========================================================================
 
-# Allow running the GUI directly for testing
+    def _on_results_configure(self, event):
+        """Update the canvas scroll region when the inner frame resizes."""
+        self.results_canvas.configure(
+            scrollregion=self.results_canvas.bbox('all')
+        )
+
+    def _on_canvas_configure(self, event):
+        """Keep the inner results frame as wide as the canvas."""
+        self.results_canvas.itemconfig(self._results_window, width=event.width)
+
+    def _bind_mousewheel(self, event):
+        """Start capturing mousewheel events when the cursor enters the results area."""
+        self.results_canvas.bind_all('<MouseWheel>', self._on_mousewheel)
+
+    def _unbind_mousewheel(self, event):
+        """Stop capturing mousewheel events when the cursor leaves."""
+        self.results_canvas.unbind_all('<MouseWheel>')
+
+    def _on_mousewheel(self, event):
+        """Scroll the results canvas on mousewheel movement."""
+        self.results_canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
+
+
+# Allow running the GUI directly for testing (creates its own controller)
 if __name__ == "__main__":
+    from app_controller import AppController
     app = WFPC()
+    ctrl = AppController(app)
+    app.set_controller(ctrl)
+    ctrl.load_cached_data()
     app.mainloop()
