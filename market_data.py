@@ -36,7 +36,7 @@ def fetch_all_items():
     simple name-to-slug conversion.
     """
     url = "https://api.warframe.market/v2/items"
-    response = requests.get(url, headers=HEADERS)
+    response = requests.get(url, headers=HEADERS, timeout=15)
     response.raise_for_status()
     data = response.json()
 
@@ -73,7 +73,7 @@ def fetch_best_buy_price(slug, display_name="", max_retries=3):
 
     for attempt in range(max_retries + 1):
         try:
-            response = requests.get(orders_url, headers=HEADERS)
+            response = requests.get(orders_url, headers=HEADERS, timeout=10)
 
             # If rate limited, wait longer on each retry and try again
             if response.status_code == 429:
@@ -184,20 +184,23 @@ def fetch_all_prices(progress_callback=None, batch_size=3, batch_delay=1.0):
 
     # Step 3: Fetch prices in small batches with pauses between each batch.
     # Official rate limit is 3 requests/second, so batch_size=3 + 1s delay.
+    # One executor is reused for all batches to avoid spinning up a new
+    # thread pool every iteration.
     print(f"Fetching prices ({batch_size} at a time, {batch_delay}s between batches)...")
     prices = {}  # slug → best_buy_price
     completed = 0
 
-    for i in range(0, total, batch_size):
-        batch = all_prime_items[i:i + batch_size]
+    with ThreadPoolExecutor(max_workers=batch_size) as executor:
+        for i in range(0, total, batch_size):
+            batch = all_prime_items[i:i + batch_size]
 
-        # Fetch this batch concurrently
-        with ThreadPoolExecutor(max_workers=len(batch)) as executor:
+            # Submit this batch of requests
             future_to_item = {
                 executor.submit(fetch_best_buy_price, item["slug"], item["name"]): item
                 for item in batch
             }
 
+            # Wait for all futures in this batch to finish before moving on
             for future in as_completed(future_to_item):
                 item = future_to_item[future]
                 price = future.result()
@@ -207,9 +210,9 @@ def fetch_all_prices(progress_callback=None, batch_size=3, batch_delay=1.0):
                 if progress_callback:
                     progress_callback(completed, total, item["name"])
 
-        # Pause between batches to stay under the rate limit
-        if i + batch_size < total:
-            time.sleep(batch_delay)
+            # Pause between batches to stay under the rate limit
+            if i + batch_size < total:
+                time.sleep(batch_delay)
 
     # Step 4: Build the final data structure, sorted by prefix and item name
     sets_data = {}

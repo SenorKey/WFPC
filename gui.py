@@ -3,6 +3,7 @@ from PIL import Image, ImageTk
 import mss
 import time
 import threading
+from datetime import datetime
 
 from read_ss import extract_words
 from market_data import (
@@ -296,7 +297,23 @@ class WFPC(tk.Tk):
             timestamp = cache.get("timestamp", "unknown")
             # Show just the date portion of the timestamp
             date_str = timestamp[:10] if len(timestamp) >= 10 else timestamp
-            self._update_status(f"{num_sets} sets loaded ({date_str})", COLORS["green"])
+
+            # Check if the cache is older than 7 days and warn the user
+            try:
+                cache_time = datetime.fromisoformat(timestamp)
+                age_days = (datetime.now() - cache_time).days
+                if age_days >= 7:
+                    # ⚠ caution symbol + yellow text to draw attention
+                    self._update_status(
+                        f"\u26A0 {num_sets} sets loaded ({date_str}) \u2014 {age_days}d old",
+                        COLORS["yellow"]
+                    )
+                else:
+                    self._update_status(f"{num_sets} sets loaded ({date_str})", COLORS["green"])
+            except (ValueError, TypeError):
+                # If the timestamp is malformed, just show it normally
+                self._update_status(f"{num_sets} sets loaded ({date_str})", COLORS["green"])
+
             print(f"Loaded cached market data: {num_sets} sets from {date_str}")
         else:
             self._update_status("No data \u2014 click Refresh Data", COLORS["red"])
@@ -346,6 +363,9 @@ class WFPC(tk.Tk):
         Capture the screen region behind the transparent area,
         run OCR on it, look up matching sets, and display prices.
         """
+        # Disable the button so rapid clicks can't start overlapping captures
+        self.screenshot_btn.config(state='disabled')
+
         # Finalize layout so winfo coordinates are accurate
         self.update_idletasks()
 
@@ -355,25 +375,30 @@ class WFPC(tk.Tk):
         cap_w = self.capture_label.winfo_width()
         cap_h = self.capture_label.winfo_height()
 
-        # Hide the window so we capture the game underneath, not ourselves
+        # Hide the window so we capture the game underneath, not ourselves.
+        # The try/finally ensures the window always comes back, even if
+        # the screenshot or OCR step crashes unexpectedly.
         self.withdraw()
         self.update()
         time.sleep(0.15)  # small delay for the OS to finish hiding the window
 
-        # Grab the screen region where our transparent area was
-        with mss.mss() as sct:
-            region = {
-                "left": cap_x,
-                "top": cap_y,
-                "width": cap_w,
-                "height": cap_h,
-            }
-            raw = sct.grab(region)
-            img = Image.frombytes("RGB", raw.size, raw.rgb)
-
-        # Bring the window back
-        self.deiconify()
-        self.update()
+        try:
+            # Grab the screen region where our transparent area was
+            with mss.mss() as sct:
+                region = {
+                    "left": cap_x,
+                    "top": cap_y,
+                    "width": cap_w,
+                    "height": cap_h,
+                }
+                raw = sct.grab(region)
+                img = Image.frombytes("RGB", raw.size, raw.rgb)
+        finally:
+            # No matter what happens above, bring the window back
+            self.deiconify()
+            self.update()
+            # Re-enable the capture button
+            self.screenshot_btn.config(state='normal')
 
         # Display the captured image in the capture area
         img_display = img.resize((cap_w, cap_h), Image.LANCZOS)
