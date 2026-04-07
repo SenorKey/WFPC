@@ -93,7 +93,8 @@ class AppController:
             # Schedule the final UI update on the main thread
             self.gui.after(0, lambda: self._on_data_loaded(cache))
         except Exception as e:
-            self.gui.after(0, lambda: self._on_data_error(str(e)))
+            err_msg = str(e)
+            self.gui.after(0, lambda: self._on_data_error(err_msg))
 
     def _on_data_loaded(self, cache):
         """Called on the main thread when data fetch completes."""
