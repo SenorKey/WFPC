@@ -60,6 +60,18 @@ class HoverButton(tk.Button):
         self.bind("<Enter>", self._on_enter)
         self.bind("<Leave>", self._on_leave)
 
+    def set_style(self, normal_bg, hover_bg, fg=None):
+        """
+        Update the button's color scheme at runtime. Used by the
+        suggested-action highlight system to swap a button between
+        default and primary styles without recreating it.
+        """
+        self._normal_bg = normal_bg
+        self._hover_bg = hover_bg
+        self.config(bg=normal_bg)
+        if fg is not None:
+            self.config(fg=fg)
+
     def _on_enter(self, event):
         if self["state"] != "disabled":
             self.config(bg=self._hover_bg)
@@ -67,6 +79,166 @@ class HoverButton(tk.Button):
     def _on_leave(self, event):
         if self["state"] != "disabled":
             self.config(bg=self._normal_bg)
+
+
+# =============================================================================
+# MONITOR PICKER — lets the user choose which monitor to draw on
+# =============================================================================
+
+
+class MonitorPicker(tk.Toplevel):
+    """
+    Dialog that shows all available monitors as clickable thumbnail
+    previews, letting the user choose which screen to define the
+    capture region on. Each thumbnail is a small screenshot of that
+    monitor, captured right before the dialog is shown (while the
+    main GUI is hidden, so the game is visible behind).
+
+    If there's only one monitor, the controller skips this dialog
+    entirely and goes straight to the RegionSelector.
+    """
+
+    THUMB_WIDTH = 220  # width of each monitor thumbnail in pixels
+
+    def __init__(self, master, on_select):
+        super().__init__(master)
+        self.on_select = on_select
+        self._photo_refs = []  # prevent garbage collection of thumbnail images
+
+        # Capture a screenshot of each monitor for the preview thumbnails.
+        # This happens before the dialog is drawn, so the screenshots
+        # show the desktop/game cleanly without this dialog in the way.
+        self._monitors = []
+        with mss.mss() as sct:
+            for mon in sct.monitors[1:]:  # skip index 0 (virtual/combined screen)
+                raw = sct.grab(mon)
+                img = Image.frombytes("RGB", raw.size, raw.rgb)
+                self._monitors.append((mon, img))
+
+        # Borderless, topmost dialog
+        self.overrideredirect(True)
+        self.wm_attributes("-topmost", True)
+        self.configure(bg=COLORS["bg"])
+
+        # Thin gold border accent around the entire dialog
+        outer = tk.Frame(self, bg=COLORS["border"], padx=1, pady=1)
+        outer.pack(fill="both", expand=True)
+        inner = tk.Frame(outer, bg=COLORS["bg"])
+        inner.pack(fill="both", expand=True)
+
+        # Title
+        tk.Label(
+            inner,
+            text="Select Monitor",
+            bg=COLORS["bg"],
+            fg=COLORS["border"],
+            font=("Segoe UI", 14, "bold"),
+        ).pack(pady=(16, 4))
+
+        # Subtitle with instructions
+        tk.Label(
+            inner,
+            text="Choose which screen to define the capture region on",
+            bg=COLORS["bg"],
+            fg=COLORS["text_dim"],
+            font=("Consolas", 9),
+        ).pack(pady=(0, 12))
+
+        # Monitor thumbnails arranged horizontally
+        row = tk.Frame(inner, bg=COLORS["bg"])
+        row.pack(padx=20, pady=(0, 12))
+
+        for i, (mon, screenshot) in enumerate(self._monitors):
+            self._build_monitor_card(row, i, mon, screenshot)
+
+        # Cancel button at the bottom
+        HoverButton(
+            inner,
+            text="\u2715  Cancel",
+            command=self._cancel,
+            normal_bg=COLORS["btn_close"],
+            hover_bg=COLORS["btn_close_hov"],
+            fg=COLORS["red"],
+            font=("Segoe UI", 10),
+            relief="flat",
+            padx=14,
+            pady=5,
+            cursor="hand2",
+        ).pack(pady=(0, 16))
+
+        # Center the dialog on the first monitor. Using the first
+        # monitor's bounds is more predictable than winfo_screenwidth()
+        # which returns the full virtual desktop on multi-monitor setups.
+        self.update_idletasks()
+        dialog_w = self.winfo_reqwidth()
+        dialog_h = self.winfo_reqheight()
+        primary = self._monitors[0][0]
+        center_x = primary["left"] + (primary["width"] - dialog_w) // 2
+        center_y = primary["top"] + (primary["height"] - dialog_h) // 2
+        self.geometry(f"+{center_x}+{center_y}")
+
+        # Grab keyboard focus so ESC works (overrideredirect windows
+        # don't receive focus automatically)
+        self.focus_force()
+        self.bind("<Escape>", lambda e: self._cancel())
+
+    def _build_monitor_card(self, parent, index, monitor, screenshot):
+        """
+        Build a clickable thumbnail card for one monitor. Shows a
+        scaled-down screenshot and the monitor number + resolution.
+        """
+        # Scale the full screenshot down to a small thumbnail
+        aspect = monitor["height"] / monitor["width"]
+        thumb_h = int(self.THUMB_WIDTH * aspect)
+        thumb = screenshot.resize((self.THUMB_WIDTH, thumb_h), Image.LANCZOS)
+        photo = ImageTk.PhotoImage(thumb)
+        self._photo_refs.append(photo)  # prevent garbage collection
+
+        # Card container
+        card = tk.Frame(parent, bg=COLORS["bg_card"], cursor="hand2")
+        card.pack(side="left", padx=8)
+
+        # Gold top accent bar
+        accent = tk.Frame(card, bg=COLORS["border"], height=2)
+        accent.pack(fill="x")
+
+        # Thumbnail image
+        img_label = tk.Label(card, image=photo, bg=COLORS["bg_card"])
+        img_label.pack(padx=6, pady=(6, 4))
+
+        # Monitor number and resolution label
+        text = (
+            f"Monitor {index + 1}  \u2014  {monitor['width']}\u00d7{monitor['height']}"
+        )
+        text_label = tk.Label(
+            card,
+            text=text,
+            bg=COLORS["bg_card"],
+            fg=COLORS["text"],
+            font=("Consolas", 9),
+        )
+        text_label.pack(padx=6, pady=(0, 8))
+
+        # Make everything in the card clickable — clicking anywhere
+        # selects this monitor. Hand cursor signals interactivity.
+        clickable_widgets = [card, img_label, text_label]
+        for widget in clickable_widgets:
+            widget.configure(cursor="hand2")
+            widget.bind("<Button-1>", lambda e, m=monitor: self._select(m))
+
+    def _select(self, monitor):
+        """User picked a monitor — pass it to the callback and close."""
+        callback = self.on_select
+        self.destroy()
+        if callback:
+            callback(monitor)
+
+    def _cancel(self):
+        """User cancelled — pass None to indicate no selection."""
+        callback = self.on_select
+        self.destroy()
+        if callback:
+            callback(None)
 
 
 # =============================================================================
@@ -78,26 +250,29 @@ class RegionSelector(tk.Toplevel):
     """
     Fullscreen overlay that lets the user drag a rectangle to define
     the screen region that will be captured for OCR. Shows a darkened
-    screenshot of the desktop as a backdrop so the user can see exactly
-    what area they're selecting. The selected coordinates are returned
-    as absolute screen positions via the on_complete callback.
+    screenshot of the chosen monitor as a backdrop so the user can see
+    exactly what area they're selecting. The selected coordinates are
+    returned as absolute screen positions via the on_complete callback.
+
+    The monitor parameter is a dict from mss (with 'left', 'top',
+    'width', 'height' keys) specifying which monitor to cover.
     """
 
-    def __init__(self, master, on_complete):
+    def __init__(self, master, monitor, on_complete):
         super().__init__(master)
         self.on_complete = on_complete
         self.region = None
+        self.monitor = monitor
 
-        # Capture the primary monitor as a backdrop image
+        # Capture the selected monitor as a backdrop image
         with mss.mss() as sct:
-            self.monitor = sct.monitors[1]  # primary monitor
             raw = sct.grab(self.monitor)
             full_screenshot = Image.frombytes("RGB", raw.size, raw.rgb)
 
         # Darken the screenshot so the selection rectangle stands out
         self.dark_screenshot = ImageEnhance.Brightness(full_screenshot).enhance(0.3)
 
-        # Fullscreen borderless window covering the primary monitor
+        # Fullscreen borderless window covering the selected monitor
         mon = self.monitor
         self.overrideredirect(True)
         self.geometry(f"{mon['width']}x{mon['height']}+{mon['left']}+{mon['top']}")
@@ -138,6 +313,10 @@ class RegionSelector(tk.Toplevel):
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
         self.bind("<Escape>", lambda e: self._finish(None))
+
+        # Force keyboard focus so ESC keybind actually works —
+        # overrideredirect windows don't receive focus automatically
+        self.focus_force()
 
     def _on_press(self, event):
         """Record the drag start point and clear any previous selection."""
@@ -198,7 +377,7 @@ class RegionSelector(tk.Toplevel):
             return
 
         # Convert canvas coordinates to absolute screen coordinates.
-        # The canvas (0,0) maps to monitor's (left, top).
+        # The canvas (0,0) maps to the monitor's (left, top).
         abs_x = self.monitor["left"] + x1
         abs_y = self.monitor["top"] + y1
         self.region = (abs_x, abs_y, w, h)
@@ -271,13 +450,16 @@ class RegionSelector(tk.Toplevel):
 class InGameOverlay(tk.Toplevel):
     """
     Small floating panel shown during in-game mode. Positioned in the
-    top-right corner of the screen with two buttons:
+    top-right corner of the specified monitor with two buttons:
       - Capture: takes a screenshot of the stored region, runs OCR,
                  then restores the main GUI with results displayed
       - Back:    cancels in-game mode and restores the main GUI
+
+    The monitor parameter determines which screen the overlay appears
+    on, so it shows up on the same monitor the user is gaming on.
     """
 
-    def __init__(self, master, on_capture, on_back):
+    def __init__(self, master, on_capture, on_back, monitor=None):
         super().__init__(master)
         self.on_capture = on_capture
         self.on_back = on_back
@@ -325,11 +507,19 @@ class InGameOverlay(tk.Toplevel):
             cursor="hand2",
         ).pack(side="left", padx=(0, 8), pady=8)
 
-        # Position in the top-right corner of the screen
+        # Position in the top-right corner of the correct monitor.
+        # If a monitor dict is provided, use its bounds so the overlay
+        # appears on the same screen the user defined their region on.
+        # Otherwise fall back to the right edge of the virtual desktop.
         self.update_idletasks()
         overlay_w = self.winfo_reqwidth()
-        screen_w = self.winfo_screenwidth()
-        self.geometry(f"+{screen_w - overlay_w - 20}+20")
+        if monitor:
+            right_edge = monitor["left"] + monitor["width"]
+            top_edge = monitor["top"]
+            self.geometry(f"+{right_edge - overlay_w - 20}+{top_edge + 20}")
+        else:
+            screen_w = self.winfo_screenwidth()
+            self.geometry(f"+{screen_w - overlay_w - 20}+20")
 
     def _do_capture(self):
         """Destroy the overlay and trigger the capture callback."""
@@ -469,7 +659,7 @@ class WFPC(tk.Tk):
         # Region status text (updated dynamically)
         self.region_label = tk.Label(
             self.region_bar,
-            text="No capture region defined \u2014 click Define Region",
+            text="No capture region defined \u2014 click Region to set one",
             bg=COLORS["bg_dark"],
             fg=COLORS["text_dim"],
             font=("Consolas", 9),
@@ -478,37 +668,23 @@ class WFPC(tk.Tk):
         self.region_label.pack(side="left", padx=(0, 8))
 
     def _build_button_bar(self):
-        """Action buttons and controls."""
+        """
+        Action buttons ordered left-to-right by typical first-use flow:
+        Refresh Data → Define Region → In Game → Clear → (gap) → Close.
+        All action buttons start with the default style; the controller
+        calls highlight_suggested() after startup to mark the next step.
+        """
 
         button_frame = tk.Frame(self, bg=COLORS["bg"])
         button_frame.pack(fill="x", padx=10, pady=(6, 4))
 
-        # Segoe UI for buttons — proportional sans-serif contrasts with
-        # the monospace Consolas used in the data/results section
         btn_font = ("Segoe UI", 10)
 
-        # Capture — primary action, gold-tinted background
-        self.screenshot_btn = HoverButton(
+        # Refresh Data — first step: load/update market prices
+        self.refresh_btn = HoverButton(
             button_frame,
-            text="\u25b6  Capture",
-            command=lambda: self.controller.capture_screenshot(),
-            normal_bg=COLORS["btn_primary"],
-            hover_bg=COLORS["btn_pri_hov"],
-            active_bg=COLORS["btn_active"],
-            fg=COLORS["border"],
-            font=btn_font,
-            relief="flat",
-            padx=14,
-            pady=5,
-            cursor="hand2",
-        )
-        self.screenshot_btn.pack(side="left", padx=(0, 6))
-
-        # Clear — reset results
-        self.clear_btn = HoverButton(
-            button_frame,
-            text="\u2715  Clear",
-            command=lambda: self.controller.clear_capture(),
+            text="\u21bb  Refresh",
+            command=lambda: self.controller.refresh_data(),
             fg=COLORS["text"],
             font=btn_font,
             relief="flat",
@@ -516,9 +692,9 @@ class WFPC(tk.Tk):
             pady=5,
             cursor="hand2",
         )
-        self.clear_btn.pack(side="left", padx=(0, 6))
+        self.refresh_btn.pack(side="left", padx=(0, 6))
 
-        # Define Region — opens the fullscreen region selector
+        # Define Region — second step: pick the screen capture area
         self.region_btn = HoverButton(
             button_frame,
             text="\u2b1c  Region",
@@ -532,7 +708,7 @@ class WFPC(tk.Tk):
         )
         self.region_btn.pack(side="left", padx=(0, 6))
 
-        # In Game — switches to minimal floating-button mode
+        # In Game — third step: switch to minimal overlay for capturing
         self.ingame_btn = HoverButton(
             button_frame,
             text="\u25b8  In Game",
@@ -544,7 +720,21 @@ class WFPC(tk.Tk):
             pady=5,
             cursor="hand2",
         )
-        self.ingame_btn.pack(side="left")
+        self.ingame_btn.pack(side="left", padx=(0, 6))
+
+        # Clear — reset results after viewing
+        self.clear_btn = HoverButton(
+            button_frame,
+            text="\u2715  Clear",
+            command=lambda: self.controller.clear_capture(),
+            fg=COLORS["text"],
+            font=btn_font,
+            relief="flat",
+            padx=14,
+            pady=5,
+            cursor="hand2",
+        )
+        self.clear_btn.pack(side="left")
 
         # Close — far right, safely terminates the application
         self.close_btn = HoverButton(
@@ -562,20 +752,6 @@ class WFPC(tk.Tk):
             cursor="hand2",
         )
         self.close_btn.pack(side="right")
-
-        # Refresh Data — next to close on the right
-        self.refresh_btn = HoverButton(
-            button_frame,
-            text="\u21bb  Refresh",
-            command=lambda: self.controller.refresh_data(),
-            fg=COLORS["text"],
-            font=btn_font,
-            relief="flat",
-            padx=14,
-            pady=5,
-            cursor="hand2",
-        )
-        self.refresh_btn.pack(side="right", padx=(0, 6))
 
     def _build_results_panel(self):
         """Scrollable results area at the bottom of the window."""
@@ -649,9 +825,27 @@ class WFPC(tk.Tk):
         fg = COLORS["green"] if defined else COLORS["text_dim"]
         self.region_label.config(text=text, fg=fg)
 
-    def set_capture_busy(self, busy):
-        """Disable or re-enable the capture button."""
-        self.screenshot_btn.config(state="disabled" if busy else "normal")
+    def highlight_suggested(self, name):
+        """
+        Highlight a single button as the suggested next action.
+        The named button gets the gold-tinted primary style; all
+        other action buttons revert to the default gray style.
+
+        Valid names: 'refresh', 'region', 'ingame', or None to
+        clear all highlights.
+        """
+        buttons = {
+            "refresh": self.refresh_btn,
+            "region": self.region_btn,
+            "ingame": self.ingame_btn,
+        }
+        for key, btn in buttons.items():
+            if key == name:
+                btn.set_style(
+                    COLORS["btn_primary"], COLORS["btn_pri_hov"], fg=COLORS["border"]
+                )
+            else:
+                btn.set_style(COLORS["btn"], COLORS["btn_hover"], fg=COLORS["text"])
 
     def set_refresh_busy(self, busy):
         """Disable or re-enable the refresh button and update its label."""
@@ -660,13 +854,17 @@ class WFPC(tk.Tk):
         else:
             self.refresh_btn.config(state="normal", text="\u21bb  Refresh")
 
-    def show_region_selector(self, on_complete):
-        """Create and display the fullscreen region selection overlay."""
-        RegionSelector(self, on_complete)
+    def show_monitor_picker(self, on_select):
+        """Create and display the monitor selection dialog."""
+        MonitorPicker(self, on_select)
 
-    def show_in_game_overlay(self, on_capture, on_back):
+    def show_region_selector(self, monitor, on_complete):
+        """Create and display the fullscreen region selection overlay."""
+        RegionSelector(self, monitor, on_complete)
+
+    def show_in_game_overlay(self, on_capture, on_back, monitor=None):
         """Create and display the minimal in-game floating panel."""
-        InGameOverlay(self, on_capture, on_back)
+        InGameOverlay(self, on_capture, on_back, monitor)
 
     def show_message(self, text):
         """Show a centered placeholder message in the results area."""

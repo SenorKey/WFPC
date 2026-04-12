@@ -40,6 +40,11 @@ class AppController:
         # screen coordinates. Set via the region selector overlay.
         self.capture_region = None
 
+        # The mss monitor dict for the screen the user selected when
+        # defining their capture region. Used to position the in-game
+        # overlay on the correct monitor.
+        self.capture_monitor = None
+
     # =========================================================================
     # MARKET DATA — loading, fetching, and cache staleness
     # =========================================================================
@@ -76,6 +81,9 @@ class AppController:
             print(f"Loaded cached market data: {num_sets} sets from {date_str}")
         else:
             self.gui.update_status("No data \u2014 click Refresh", "red")
+
+        # Set the initial button highlight based on current state
+        self._update_suggested_highlight()
 
     def refresh_data(self):
         """
@@ -114,31 +122,105 @@ class AppController:
         num_sets = len(cache["sets"])
         self.gui.set_refresh_busy(False)
         self.gui.update_status(f"{num_sets} sets loaded (fresh)", "green")
+        self._update_suggested_highlight()
 
     def _on_data_error(self, error_msg):
         """Called on the main thread if data fetch fails."""
         self.gui.set_refresh_busy(False)
         self.gui.update_status(f"Error: {error_msg[:30]}", "red")
+        self._update_suggested_highlight()
 
     # =========================================================================
-    # REGION DEFINITION — let the user draw a rectangle on screen
+    # SUGGESTED HIGHLIGHT — guide the user through the setup flow
+    # =========================================================================
+
+    def _data_is_stale(self):
+        """
+        Check if cached market data is older than 5 days.
+        Returns True if no data exists or if the timestamp is too old.
+        """
+        if not self.market_data:
+            return True
+        timestamp = self.market_data.get("timestamp", "")
+        try:
+            cache_time = datetime.fromisoformat(timestamp)
+            return (datetime.now() - cache_time).days >= 5
+        except (ValueError, TypeError):
+            # Timestamp is malformed — data exists but age is unknown,
+            # don't force a refresh just because of a bad timestamp
+            return False
+
+    def _update_suggested_highlight(self):
+        """
+        Evaluate the current app state and highlight the single button
+        that represents the most logical next step for the user.
+
+        Priority order:
+          1. Refresh — if no market data or data is older than 5 days
+          2. Region  — if data is fresh but no capture region is defined
+          3. In Game — if both data and region are ready to go
+        """
+        if not self.market_data or self._data_is_stale():
+            self.gui.highlight_suggested("refresh")
+        elif not self.capture_region:
+            self.gui.highlight_suggested("region")
+        else:
+            self.gui.highlight_suggested("ingame")
+
+    # =========================================================================
+    # REGION DEFINITION — monitor picker then rectangle drawing
     # =========================================================================
 
     def define_region(self):
         """
-        Hide the main GUI and open the fullscreen region selector.
-        The user drags a rectangle to define the capture area, then
-        accepts or cancels. The GUI reappears in either case.
+        Begin the region definition flow. Hides the main GUI first
+        (so it's not visible in screenshots), then either:
+          - If only one monitor: skip straight to the region selector
+          - If multiple monitors: show the monitor picker dialog first
         """
         self.gui.withdraw()
         self.gui.update()
         # Brief delay so the OS finishes hiding the window before
-        # we screenshot the desktop for the selector backdrop
-        self.gui.after(200, self._open_region_selector)
+        # we screenshot the desktop for the selector/picker backdrop
+        self.gui.after(200, self._begin_region_flow)
 
-    def _open_region_selector(self):
-        """Create the region selector overlay (called after the GUI hides)."""
-        self.gui.show_region_selector(self._on_region_defined)
+    def _begin_region_flow(self):
+        """
+        Check how many monitors are available and decide whether to
+        show the picker or go straight to the region selector.
+        """
+        with mss.mss() as sct:
+            monitors = sct.monitors[1:]  # skip index 0 (virtual/combined)
+
+        if len(monitors) == 1:
+            # Single monitor — skip the picker, go straight to selector
+            self._on_monitor_selected(monitors[0])
+        else:
+            # Multiple monitors — let the user pick which one
+            self.gui.show_monitor_picker(self._on_monitor_selected)
+
+    def _on_monitor_selected(self, monitor):
+        """
+        Callback from the monitor picker (or called directly for
+        single-monitor setups). Receives an mss monitor dict, or
+        None if the user cancelled the picker.
+        """
+        if monitor is None:
+            # User cancelled — bring back the main window
+            self.gui.deiconify()
+            self.gui.update()
+            return
+
+        # Store the selected monitor for later use (in-game overlay positioning)
+        self.capture_monitor = monitor
+
+        # Brief delay to let the monitor picker fully disappear from
+        # the screen before we screenshot the monitor for the selector
+        self.gui.after(150, lambda: self._open_region_selector(monitor))
+
+    def _open_region_selector(self, monitor):
+        """Create the region selector overlay on the chosen monitor."""
+        self.gui.show_region_selector(monitor, self._on_region_defined)
 
     def _on_region_defined(self, region):
         """
@@ -155,6 +237,7 @@ class AppController:
         # Bring back the main window whether they accepted or cancelled
         self.gui.deiconify()
         self.gui.update()
+        self._update_suggested_highlight()
 
     # =========================================================================
     # IN-GAME MODE — minimal floating buttons during gameplay
@@ -164,7 +247,8 @@ class AppController:
         """
         Switch to in-game mode: hide the main GUI and show a small
         floating panel with Capture and Back buttons. Requires a
-        capture region to be defined first.
+        capture region to be defined first. The overlay is placed
+        on the same monitor the user selected for their region.
         """
         if not self.capture_region:
             self.gui.show_message(
@@ -178,6 +262,7 @@ class AppController:
         self.gui.show_in_game_overlay(
             on_capture=self._in_game_capture,
             on_back=self._exit_in_game_mode,
+            monitor=self.capture_monitor,
         )
 
     def _in_game_capture(self):
@@ -195,41 +280,17 @@ class AppController:
         self._do_capture()
         self.gui.deiconify()
         self.gui.update()
+        self._update_suggested_highlight()
 
     def _exit_in_game_mode(self):
         """Leave in-game mode and restore the main GUI."""
         self.gui.deiconify()
         self.gui.update()
+        self._update_suggested_highlight()
 
     # =========================================================================
     # SCREENSHOT CAPTURE — grab the stored screen region
     # =========================================================================
-
-    def capture_screenshot(self):
-        """
-        Capture the stored screen region from the normal GUI.
-        Hides the window briefly in case it overlaps the capture area,
-        grabs the screenshot, then shows the window again with results.
-        """
-        if not self.capture_region:
-            self.gui.show_message(
-                "No capture region defined.\n"
-                "Click 'Region' to define the area first."
-            )
-            return
-
-        self.gui.set_capture_busy(True)
-        self.gui.withdraw()
-        self.gui.update()
-        # Schedule capture after the window disappears
-        self.gui.after(200, self._do_normal_capture)
-
-    def _do_normal_capture(self):
-        """Perform the capture from normal mode and restore the GUI."""
-        self._do_capture()
-        self.gui.deiconify()
-        self.gui.update()
-        self.gui.set_capture_busy(False)
 
     def _do_capture(self):
         """
