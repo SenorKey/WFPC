@@ -332,6 +332,9 @@ class RegionSelector(tk.Toplevel):
 
     def _on_drag(self, event):
         """Draw the selection rectangle and show its dimensions as the user drags."""
+        if self.start_x is None:
+            return
+
         # Clean up previous frame's rectangle and label
         if self.rect_id:
             self.canvas.delete(self.rect_id)
@@ -368,6 +371,12 @@ class RegionSelector(tk.Toplevel):
         When the user releases the mouse, finalize the rectangle and
         show Accept / Cancel buttons just below it.
         """
+        # Guard: if start_x is None, this release came from clicking
+        # the Accept/Cancel buttons — the event bubbled up to the
+        # canvas but _on_press never fired, so there's nothing to do.
+        if self.start_x is None:
+            return
+
         x1, y1 = min(self.start_x, event.x), min(self.start_y, event.y)
         x2, y2 = max(self.start_x, event.x), max(self.start_y, event.y)
         w, h = x2 - x1, y2 - y1
