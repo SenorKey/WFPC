@@ -575,6 +575,11 @@ class WFPC(tk.Tk):
         # Controller is set after construction via set_controller()
         self.controller = None
 
+        # Card reflow state — tracks which card widgets exist and the
+        # current column count so we only re-grid when layout changes
+        self._result_cards = []
+        self._prev_num_cols = 0
+
         self._build_ui()
 
     def set_controller(self, controller):
@@ -879,6 +884,9 @@ class WFPC(tk.Tk):
         """Show a centered placeholder message in the results area."""
         for widget in self.results_list.winfo_children():
             widget.destroy()
+        # Clear card tracking so reflow doesn't act on destroyed widgets
+        self._result_cards = []
+        self._prev_num_cols = 0
 
         msg_frame = tk.Frame(self.results_list, bg=COLORS["bg_dark"])
         msg_frame.pack(fill="both", expand=True, pady=30)
@@ -897,44 +905,40 @@ class WFPC(tk.Tk):
     def display_results(self, matches):
         """
         Display price results for each matched set inside individual
-        card-style panels, one per column. After building all cards,
-        highlight the highest set price (blue) and highest parts total (green).
+        card-style panels that reflow responsively as the window resizes.
+
+        Cards have a minimum width so text is never truncated, and a
+        maximum width so a single result looks like a card rather than
+        a full-width banner. The layout wraps cards into rows based on
+        available width, with vertical scrolling for overflow.
+
+        After building all cards, highlights the highest set price
+        (blue) and highest parts total (green).
         """
-        # Clear existing content
+        # Clear existing content and previous card tracking
         for widget in self.results_list.winfo_children():
             widget.destroy()
-
-        sets = list(matches.items())
-        num_cols = len(sets)
-
-        # Configure grid columns to share width equally
-        for col_idx in range(num_cols):
-            self.results_list.columnconfigure(col_idx, weight=1, uniform="set_col")
+        self._result_cards = []
+        self._prev_num_cols = 0
 
         # Track rows and their numeric values so we can highlight the best ones
         set_price_rows = []
         parts_total_rows = []
 
-        for col_idx, (prefix, items) in enumerate(sets):
+        for prefix, items in matches.items():
             breakdown = break_down_set(items)
 
             # =================================================================
             # CARD — each set gets a raised card frame with a gold top accent
             # =================================================================
 
+            # Outer card container — this is what gets gridded during reflow
             card_pad = tk.Frame(self.results_list, bg=COLORS["bg_dark"])
-            card_pad.grid(
-                row=0,
-                column=col_idx,
-                sticky="nsew",
-                padx=(0 if col_idx == 0 else 4, 0 if col_idx == num_cols - 1 else 4),
-                pady=4,
-            )
 
             # Thin gold accent along the top edge of the card
             tk.Frame(card_pad, bg=COLORS["border"], height=2).pack(fill="x")
 
-            # Card body
+            # Card body with slightly elevated background
             card = tk.Frame(card_pad, bg=COLORS["bg_card"])
             card.pack(fill="both", expand=True)
 
@@ -1005,6 +1009,9 @@ class WFPC(tk.Tk):
             # Bottom padding inside the card
             tk.Frame(card, bg=COLORS["bg_card"], height=6).pack()
 
+            # Store the card frame for responsive reflow
+            self._result_cards.append(card_pad)
+
         # =================================================================
         # HIGHLIGHT — apply subtle backgrounds to the best-value rows
         # =================================================================
@@ -1017,7 +1024,76 @@ class WFPC(tk.Tk):
             best_total = max(parts_total_rows, key=lambda x: x[0])
             self._highlight_row(best_total[1], COLORS["hl_green"])
 
+        # Perform the initial layout and scroll to top
+        self._reflow_cards()
         self.results_canvas.yview_moveto(0)
+
+    # Minimum and maximum card widths for the responsive layout.
+    # MIN ensures text is never truncated; MAX prevents a single
+    # card from stretching awkwardly across the full window width.
+    _MIN_CARD_WIDTH = 220
+    _MAX_CARD_WIDTH = 300
+
+    def _reflow_cards(self):
+        """
+        Arrange card widgets into a grid that adapts to the current
+        canvas width. Cards wrap into rows based on available space,
+        with a minimum width per card to prevent text truncation.
+
+        Called on initial display and whenever the canvas resizes.
+        Only re-grids if the column count actually changed, to avoid
+        layout thrashing during smooth window dragging.
+        """
+        if not hasattr(self, "_result_cards") or not self._result_cards:
+            return
+
+        canvas_w = self.results_canvas.winfo_width()
+        if canvas_w <= 1:
+            # Canvas hasn't been drawn yet — use the requested width
+            canvas_w = self.results_canvas.winfo_reqwidth()
+        if canvas_w <= 1:
+            canvas_w = 680  # reasonable fallback for first frame
+
+        # Calculate how many columns fit at the minimum card width
+        num_cols = max(1, canvas_w // self._MIN_CARD_WIDTH)
+        # Don't use more columns than cards
+        num_cols = min(num_cols, len(self._result_cards))
+
+        # Skip re-gridding if the column count hasn't changed
+        if num_cols == self._prev_num_cols:
+            return
+        self._prev_num_cols = num_cols
+
+        # Clear all previous column configurations to avoid stale
+        # uniform groups from a previous column count
+        for i in range(max(num_cols, 20)):
+            self.results_list.columnconfigure(i, weight=0, uniform="", minsize=0)
+
+        # Configure the active columns with equal weight and minimum size
+        for col in range(num_cols):
+            self.results_list.columnconfigure(
+                col,
+                weight=1,
+                uniform="card_col",
+                minsize=self._MIN_CARD_WIDTH,
+            )
+
+        # Grid each card into the right row and column
+        for i, card in enumerate(self._result_cards):
+            row = i // num_cols
+            col = i % num_cols
+            card.grid(
+                row=row,
+                column=col,
+                sticky="nsew",
+                padx=4,
+                pady=4,
+            )
+
+        # Make sure all rows can expand equally
+        num_rows = (len(self._result_cards) + num_cols - 1) // num_cols
+        for row in range(num_rows):
+            self.results_list.rowconfigure(row, weight=1)
 
     # =========================================================================
     # PRIVATE HELPERS
@@ -1029,11 +1105,19 @@ class WFPC(tk.Tk):
 
     def _add_result_row(self, parent, name, price, fg=COLORS["text_muted"], bold=False):
         """
-        Add a single name -> price row inside a card.
+        Add a single name → price row inside a card. Uses grid layout
+        so the name column gets flexible space while the price column
+        stays fixed-width — this prevents text overlap when cards are
+        at their minimum width.
+
         Returns the row frame so callers can highlight it later.
         """
         row = tk.Frame(parent, bg=COLORS["bg_card"])
         row.pack(fill="x", padx=10, pady=2)
+
+        # Name gets all available space, price stays compact on the right
+        row.columnconfigure(0, weight=1)
+        row.columnconfigure(1, weight=0)
 
         name_font = ("Consolas", 10, "bold") if bold else ("Consolas", 10)
 
@@ -1044,7 +1128,7 @@ class WFPC(tk.Tk):
             fg=fg,
             font=name_font,
             anchor="w",
-        ).pack(side="left")
+        ).grid(row=0, column=0, sticky="w")
 
         tk.Label(
             row,
@@ -1053,7 +1137,7 @@ class WFPC(tk.Tk):
             fg=COLORS["border"],
             font=("Consolas", 10, "bold"),
             anchor="e",
-        ).pack(side="right")
+        ).grid(row=0, column=1, sticky="e", padx=(8, 0))
 
         return row
 
@@ -1075,8 +1159,12 @@ class WFPC(tk.Tk):
         self.results_canvas.configure(scrollregion=self.results_canvas.bbox("all"))
 
     def _on_canvas_configure(self, event):
-        """Keep the inner results frame as wide as the canvas."""
+        """
+        Keep the inner results frame as wide as the canvas, and
+        reflow cards when the available width changes.
+        """
         self.results_canvas.itemconfig(self._results_window, width=event.width)
+        self._reflow_cards()
 
     def _bind_mousewheel(self, event):
         """Start capturing mousewheel events when the cursor enters the results area."""
