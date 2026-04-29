@@ -1,3 +1,5 @@
+import json
+import os
 import mss
 import threading
 from PIL import Image
@@ -10,6 +12,9 @@ from market_data import (
     load_cache,
     find_sets_from_words,
 )
+
+
+REGION_CACHE_FILE = "region_cache.json"
 
 
 class AppController:
@@ -45,6 +50,11 @@ class AppController:
         # overlay on the correct monitor.
         self.capture_monitor = None
 
+        # Timestamp (ISO 8601 string) for when the current capture
+        # region was defined. Persisted alongside the coordinates so
+        # the user can see how old their saved region is.
+        self.region_timestamp = None
+
     # =========================================================================
     # MARKET DATA — loading, fetching, and cache staleness
     # =========================================================================
@@ -54,6 +64,9 @@ class AppController:
         Try to load market data from the local JSON cache file.
         If the cache is older than 7 days, tell the GUI to show
         a yellow warning so the user knows prices may be stale.
+
+        Also restores the saved capture region (if any) so the user
+        doesn't have to redefine it every session.
         """
         cache = load_cache()
         if cache:
@@ -81,6 +94,11 @@ class AppController:
             print(f"Loaded cached market data: {num_sets} sets from {date_str}")
         else:
             self.gui.update_status("No data \u2014 click Refresh", "red")
+
+        # Restore saved capture region if one exists. Done before the
+        # suggested-highlight update so the next-step logic sees the
+        # restored region and suggests "In Game" rather than "Region".
+        self._load_region()
 
         # Set the initial button highlight based on current state
         self._update_suggested_highlight()
@@ -229,15 +247,82 @@ class AppController:
         """
         if region:
             self.capture_region = region
+            # Stamp the region with the current time and save it to
+            # disk so it survives across sessions
+            self.region_timestamp = datetime.now().isoformat()
+            self._save_region()
+
             x, y, w, h = region
+            date_str = self.region_timestamp[:10]
             self.gui.update_region_display(
-                f"Region: {w}\u00d7{h} at ({x}, {y})", defined=True
+                f"Region: {w}\u00d7{h} at ({x}, {y}) \u2014 saved {date_str}",
+                defined=True,
             )
             print(f"Capture region defined: {w}x{h} at ({x}, {y})")
         # Bring back the main window whether they accepted or cancelled
         self.gui.deiconify()
         self.gui.update()
         self._update_suggested_highlight()
+
+    # =========================================================================
+    # REGION PERSISTENCE — save/load to JSON between sessions
+    # =========================================================================
+
+    def _save_region(self):
+        """
+        Persist the current capture region, monitor, and timestamp to
+        disk so the user doesn't have to redefine the region every time
+        they launch the app.
+        """
+        if not self.capture_region:
+            return
+        try:
+            with open(REGION_CACHE_FILE, "w") as f:
+                json.dump(
+                    {
+                        "region": list(self.capture_region),  # tuple → list for JSON
+                        "monitor": self.capture_monitor,
+                        "timestamp": self.region_timestamp,
+                    },
+                    f,
+                    indent=2,
+                )
+            print(f"Region saved to {REGION_CACHE_FILE}")
+        except Exception as e:
+            print(f"Failed to save region: {e}")
+
+    def _load_region(self):
+        """
+        Restore the capture region, monitor, and save timestamp from
+        disk if a saved file exists. Updates the GUI region bar with
+        the loaded values. Silently does nothing if the file is missing
+        or malformed — the user can always redefine via the Region button.
+        """
+        if not os.path.exists(REGION_CACHE_FILE):
+            return
+        try:
+            with open(REGION_CACHE_FILE, "r") as f:
+                data = json.load(f)
+
+            self.capture_region = tuple(data["region"])
+            self.capture_monitor = data.get("monitor")
+            self.region_timestamp = data.get("timestamp")
+
+            x, y, w, h = self.capture_region
+
+            # Format the saved-on date if we have a timestamp
+            if self.region_timestamp:
+                date_str = self.region_timestamp[:10]
+                display_text = (
+                    f"Region: {w}\u00d7{h} at ({x}, {y}) \u2014 saved {date_str}"
+                )
+            else:
+                display_text = f"Region: {w}\u00d7{h} at ({x}, {y})"
+
+            self.gui.update_region_display(display_text, defined=True)
+            print(f"Loaded saved region: {w}x{h} at ({x}, {y})")
+        except Exception as e:
+            print(f"Failed to load saved region: {e}")
 
     # =========================================================================
     # IN-GAME MODE — minimal floating buttons during gameplay

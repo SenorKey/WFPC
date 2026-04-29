@@ -172,9 +172,20 @@ class MonitorPicker(tk.Toplevel):
         self.update_idletasks()
         dialog_w = self.winfo_reqwidth()
         dialog_h = self.winfo_reqheight()
-        primary = self._monitors[0][0]
-        center_x = primary["left"] + (primary["width"] - dialog_w) // 2
-        center_y = primary["top"] + (primary["height"] - dialog_h) // 2
+        win_x = master.winfo_x()
+        win_y = master.winfo_y()
+        # Find the monitor whose bounds contain the main window's top-left corner.
+        # Fall back to the first monitor if none match (shouldn't normally happen).
+        host_monitor = self._monitors[0][0]
+        for mon, _ in self._monitors:
+            if (
+                mon["left"] <= win_x < mon["left"] + mon["width"]
+                and mon["top"] <= win_y < mon["top"] + mon["height"]
+            ):
+                host_monitor = mon
+                break
+        center_x = host_monitor["left"] + (host_monitor["width"] - dialog_w) // 2
+        center_y = host_monitor["top"] + (host_monitor["height"] - dialog_h) // 2
         self.geometry(f"+{center_x}+{center_y}")
 
         # Grab keyboard focus so ESC works (overrideredirect windows

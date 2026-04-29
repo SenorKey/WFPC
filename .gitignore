@@ -210,3 +210,4 @@ __marimo__/
 .DS_Store
 
 market_cache.json
+region_cache.json
