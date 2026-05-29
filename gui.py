@@ -869,7 +869,7 @@ class WFPC(tk.Tk):
 
         tk.Label(
             panel,
-            text="highest buy prices",
+            text="top prices, 5+ buyers",
             bg=COLORS["bg_dark"],
             fg=COLORS["text_dim"],
             font=("Consolas", 8),

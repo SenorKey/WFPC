@@ -59,13 +59,28 @@ def fetch_all_items():
     return prime_items
 
 
-def fetch_best_buy_price(slug, display_name="", max_retries=3):
-    """
-    Fetch the highest online buy order price for a single item
-    using the /top endpoint, which returns the top 5 buy and
-    top 5 sell orders from online users, pre-sorted by price.
+# Returned for any item whose orders couldn't be fetched (network error,
+# rate limit exhaustion). Treated as "no price, no offers" downstream.
+_EMPTY_ORDER_INFO = {"best_buy_price": None, "buy_count": 0, "sell_count": 0}
 
-    Returns the price in platinum, or None if no online buyers exist.
+
+def fetch_top_orders(slug, display_name="", max_retries=3):
+    """
+    Fetch order info for a single item using the /top endpoint.
+
+    The /top endpoint returns the top (up to) 5 buy and 5 sell orders
+    from NON-OFFLINE users only, pre-sorted by price. Because it's
+    capped at 5 and already excludes offline users, the length of each
+    list is min(actual non-offline orders, 5) — so a count of 5 means
+    "5 or more non-offline offers exist", which is exactly the liquidity
+    signal we use to filter the top-items panel.
+
+    Returns a dict:
+        {
+            "best_buy_price": highest non-offline buy price (plat) or None,
+            "buy_count":      number of non-offline buy orders (0-5),
+            "sell_count":     number of non-offline sell orders (0-5),
+        }
     Retries with exponential backoff if we get rate limited (429).
     """
     # Correct v2 endpoint: /v2/orders/item/{slug}/top
@@ -84,23 +99,28 @@ def fetch_best_buy_price(slug, display_name="", max_retries=3):
                     continue
                 else:
                     print(f"  Rate limited on {display_name}, giving up after {max_retries} retries.")
-                    return None
+                    return dict(_EMPTY_ORDER_INFO)
 
             response.raise_for_status()
             data = response.json()
 
             # The /top endpoint returns: { "buy": [...], "sell": [...] }
-            # Buy orders are sorted by price (highest first)
+            # Buy orders are sorted by price (highest first).
             buy_orders = data["data"].get("buy", [])
+            sell_orders = data["data"].get("sell", [])
 
-            # First buy order is the best price since they're pre-sorted
-            return buy_orders[0]["platinum"] if buy_orders else None
+            return {
+                # First buy order is the best price since they're pre-sorted
+                "best_buy_price": buy_orders[0]["platinum"] if buy_orders else None,
+                "buy_count": len(buy_orders),
+                "sell_count": len(sell_orders),
+            }
 
         except Exception as e:
-            print(f"  Error fetching price for {display_name} ({slug}): {e}")
-            return None
+            print(f"  Error fetching orders for {display_name} ({slug}): {e}")
+            return dict(_EMPTY_ORDER_INFO)
 
-    return None
+    return dict(_EMPTY_ORDER_INFO)
 
 
 # =============================================================================
@@ -187,7 +207,7 @@ def fetch_all_prices(progress_callback=None, batch_size=3, batch_delay=1.0):
     # One executor is reused for all batches to avoid spinning up a new
     # thread pool every iteration.
     print(f"Fetching prices ({batch_size} at a time, {batch_delay}s between batches)...")
-    prices = {}  # slug → best_buy_price
+    order_info = {}  # slug → {"best_buy_price", "buy_count", "sell_count"}
     completed = 0
 
     with ThreadPoolExecutor(max_workers=batch_size) as executor:
@@ -196,15 +216,14 @@ def fetch_all_prices(progress_callback=None, batch_size=3, batch_delay=1.0):
 
             # Submit this batch of requests
             future_to_item = {
-                executor.submit(fetch_best_buy_price, item["slug"], item["name"]): item
+                executor.submit(fetch_top_orders, item["slug"], item["name"]): item
                 for item in batch
             }
 
             # Wait for all futures in this batch to finish before moving on
             for future in as_completed(future_to_item):
                 item = future_to_item[future]
-                price = future.result()
-                prices[item["slug"]] = price
+                order_info[item["slug"]] = future.result()
                 completed += 1
 
                 if progress_callback:
@@ -220,10 +239,13 @@ def fetch_all_prices(progress_callback=None, batch_size=3, batch_delay=1.0):
         items_in_set = grouped[prefix]
         sets_data[prefix] = []
         for item in sorted(items_in_set, key=lambda x: x["name"]):
+            info = order_info.get(item["slug"], _EMPTY_ORDER_INFO)
             sets_data[prefix].append({
                 "name": item["name"],
                 "slug": item["slug"],
-                "best_buy_price": prices.get(item["slug"])
+                "best_buy_price": info.get("best_buy_price"),
+                "buy_count": info.get("buy_count", 0),
+                "sell_count": info.get("sell_count", 0),
             })
 
     cache = {
@@ -302,24 +324,35 @@ def find_sets_from_words(cache_data, ocr_words):
     return results
 
 
-def top_priced_parts(cache_data, n=5):
+def top_priced_parts(cache_data, n=5, min_buy_offers=5):
     """
     Return the n highest-priced individual prime parts across the whole
     cache, sorted by best buy price (highest first).
 
-    Full "Set" entries are deliberately excluded: relics drop individual
-    parts, not assembled sets, so a player choosing which relics to farm
-    cares about the most valuable *parts*. Items with no online buyers
-    (best_buy_price is None) are skipped.
+    Filtering rules:
+      - Full "Set" entries are excluded: relics drop individual parts,
+        not assembled sets, so a farmer cares about valuable *parts*.
+      - Items with no buy price (best_buy_price is None) are skipped.
+      - Items with fewer than `min_buy_offers` non-offline buy orders are
+        skipped. "buy_count" comes from the /top endpoint, which only
+        counts non-offline users and caps at 5, so the default of 5 means
+        "at least 5 active buyers" — a liquidity filter that keeps the
+        panel from surfacing items whose high price rests on one or two
+        thin orders.
 
-    Each returned dict is the same item dict stored in the cache
-    ("name", "slug", "best_buy_price").
+    Cache entries from before the buy_count field existed default to 0,
+    so they're filtered out until the data is refreshed.
+
+    Each returned dict is the item dict stored in the cache
+    ("name", "slug", "best_buy_price", "buy_count", "sell_count").
     """
     items = [
         item
         for set_items in cache_data["sets"].values()
         for item in set_items
-        if item["best_buy_price"] is not None and "Set" not in item["name"]
+        if item["best_buy_price"] is not None
+        and "Set" not in item["name"]
+        and item.get("buy_count", 0) >= min_buy_offers
     ]
     items.sort(key=lambda x: x["best_buy_price"], reverse=True)
     return items[:n]
