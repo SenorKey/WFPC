@@ -579,8 +579,15 @@ class WFPC(tk.Tk):
         super().__init__()
 
         self.title("WFPC")
-        self.geometry("700x400")
-        self.minsize(500, 350)
+        # Default size is roomy enough to show all four result cards in a
+        # single row (a relic mission normally ends with four rewards)
+        # plus the full top-items panel, with nothing scrolled. Width is
+        # sized so the results canvas (= width - ~256px of chrome) clears
+        # 4 x 288px of cards. The window can be shrunk down to minsize, at
+        # which point the side panel gains a scrollbar and the result
+        # cards reflow into fewer columns (down to a single one).
+        self.geometry("1440x600")
+        self.minsize(560, 380)
         self.configure(bg=COLORS["bg"])
 
         # Controller is set after construction via set_controller()
@@ -846,6 +853,10 @@ class WFPC(tk.Tk):
         Build the always-visible side panel listing the highest-priced
         individual prime parts. Sits on the right of the content row at a
         fixed width; rows are (re)populated by update_top_items().
+
+        The list area is scrollable: at the default window size all items
+        fit without scrolling, but if the window is shrunk a scrollbar
+        appears automatically (see _on_top_scroll_set).
         """
         panel = tk.Frame(
             parent, bg=COLORS["bg_dark"], width=self._TOP_PANEL_WIDTH
@@ -857,7 +868,7 @@ class WFPC(tk.Tk):
         # Gold accent strip along the top edge, matching result cards
         tk.Frame(panel, bg=COLORS["border"], height=2).pack(fill="x")
 
-        # Header
+        # Header (stays fixed at the top, above the scrollable list)
         tk.Label(
             panel,
             text="Top Items",
@@ -881,12 +892,65 @@ class WFPC(tk.Tk):
             fill="x", padx=10, pady=(0, 4)
         )
 
+        # Scrollable region: canvas + (auto-hiding) scrollbar
+        scroll_wrap = tk.Frame(panel, bg=COLORS["bg_dark"])
+        scroll_wrap.pack(fill="both", expand=True)
+
+        self.top_scrollbar = tk.Scrollbar(
+            scroll_wrap, orient="vertical", troughcolor=COLORS["bg_dark"]
+        )
+        # Not packed yet — _on_top_scroll_set shows it only when needed.
+
+        self.top_canvas = tk.Canvas(
+            scroll_wrap, bg=COLORS["bg_dark"], highlightthickness=0
+        )
+        self.top_canvas.pack(side="left", fill="both", expand=True)
+        self.top_scrollbar.config(command=self.top_canvas.yview)
+        self.top_canvas.config(yscrollcommand=self._on_top_scroll_set)
+
         # Container that update_top_items() clears and rebuilds
-        self.top_items_list = tk.Frame(panel, bg=COLORS["bg_dark"])
-        self.top_items_list.pack(fill="both", expand=True)
+        self.top_items_list = tk.Frame(self.top_canvas, bg=COLORS["bg_dark"])
+        self._top_window = self.top_canvas.create_window(
+            (0, 0), window=self.top_items_list, anchor="nw"
+        )
+
+        self.top_items_list.bind("<Configure>", self._on_top_items_configure)
+        self.top_canvas.bind("<Configure>", self._on_top_canvas_configure)
+        self.top_canvas.bind("<Enter>", self._bind_top_mousewheel)
+        self.top_canvas.bind("<Leave>", self._unbind_top_mousewheel)
 
         # Initial state until the controller pushes data
         self._show_top_items_placeholder("Refresh to see top items")
+
+    # --- top-items panel scrolling -------------------------------------------
+
+    def _on_top_scroll_set(self, first, last):
+        """
+        yscrollcommand callback that auto-hides the scrollbar when all
+        items fit, and shows it (flush right) only when they overflow.
+        """
+        if float(first) <= 0.0 and float(last) >= 1.0:
+            self.top_scrollbar.pack_forget()
+        else:
+            self.top_scrollbar.pack(side="right", fill="y")
+        self.top_scrollbar.set(first, last)
+
+    def _on_top_items_configure(self, event):
+        """Update the side panel scroll region when its content changes."""
+        self.top_canvas.configure(scrollregion=self.top_canvas.bbox("all"))
+
+    def _on_top_canvas_configure(self, event):
+        """Keep the inner list as wide as the side canvas."""
+        self.top_canvas.itemconfig(self._top_window, width=event.width)
+
+    def _bind_top_mousewheel(self, event):
+        self.top_canvas.bind_all("<MouseWheel>", self._on_top_mousewheel)
+
+    def _unbind_top_mousewheel(self, event):
+        self.top_canvas.unbind_all("<MouseWheel>")
+
+    def _on_top_mousewheel(self, event):
+        self.top_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _show_top_items_placeholder(self, text):
         """Show a centered dim message in the top-items panel."""
@@ -1153,17 +1217,19 @@ class WFPC(tk.Tk):
         self._reflow_cards()
         self.results_canvas.yview_moveto(0)
 
-    # Minimum and maximum card widths for the responsive layout.
-    # MIN ensures text is never truncated; MAX prevents a single
-    # card from stretching awkwardly across the full window width.
-    _MIN_CARD_WIDTH = 220
-    _MAX_CARD_WIDTH = 300
+    # Fixed result-card width. Sized to fit the longest item text
+    # ("Kavasa Prime Kubrow Collar Blueprint" → "Kubrow Collar Blueprint",
+    # 23 chars) plus its price, fully and without truncation — but no
+    # wider, so cards look like cards rather than full-width banners.
+    _CARD_WIDTH = 280
+    _CARD_PAD = 4  # padding around each card on every side
 
     def _reflow_cards(self):
         """
-        Arrange card widgets into a grid that adapts to the current
-        canvas width. Cards wrap into rows based on available space,
-        with a minimum width per card to prevent text truncation.
+        Arrange the fixed-width result cards into a grid whose column
+        COUNT adapts to the available width. Cards themselves never
+        resize — when the window is too narrow for the current number of
+        columns, they reflow into fewer columns (down to a single one).
 
         Called on initial display and whenever the canvas resizes.
         Only re-grids if the column count actually changed, to avoid
@@ -1177,10 +1243,11 @@ class WFPC(tk.Tk):
             # Canvas hasn't been drawn yet — use the requested width
             canvas_w = self.results_canvas.winfo_reqwidth()
         if canvas_w <= 1:
-            canvas_w = 680  # reasonable fallback for first frame
+            canvas_w = self._CARD_WIDTH  # reasonable fallback for first frame
 
-        # Calculate how many columns fit at the minimum card width
-        num_cols = max(1, canvas_w // self._MIN_CARD_WIDTH)
+        # How many fixed-width cards (plus their padding) fit across
+        col_total = self._CARD_WIDTH + 2 * self._CARD_PAD
+        num_cols = max(1, canvas_w // col_total)
         # Don't use more columns than cards
         num_cols = min(num_cols, len(self._result_cards))
 
@@ -1189,36 +1256,28 @@ class WFPC(tk.Tk):
             return
         self._prev_num_cols = num_cols
 
-        # Clear all previous column configurations to avoid stale
-        # uniform groups from a previous column count
+        # Reset any previously configured columns. Cards are a fixed
+        # width (weight=0), so spare horizontal space is simply left
+        # empty to the right rather than stretching the cards.
         for i in range(max(num_cols, 20)):
             self.results_list.columnconfigure(i, weight=0, uniform="", minsize=0)
-
-        # Configure the active columns with equal weight and minimum size
         for col in range(num_cols):
             self.results_list.columnconfigure(
-                col,
-                weight=1,
-                uniform="card_col",
-                minsize=self._MIN_CARD_WIDTH,
+                col, weight=0, minsize=col_total
             )
 
-        # Grid each card into the right row and column
+        # Grid each card. Every column is pinned to the same width
+        # (minsize=col_total, weight=0), and sticky="new" stretches each
+        # card horizontally to fill it — so all cards render at exactly
+        # _CARD_WIDTH — while "n" (not "s") leaves height natural.
         for i, card in enumerate(self._result_cards):
-            row = i // num_cols
-            col = i % num_cols
             card.grid(
-                row=row,
-                column=col,
-                sticky="nsew",
-                padx=4,
-                pady=4,
+                row=i // num_cols,
+                column=i % num_cols,
+                sticky="new",
+                padx=self._CARD_PAD,
+                pady=self._CARD_PAD,
             )
-
-        # Make sure all rows can expand equally
-        num_rows = (len(self._result_cards) + num_cols - 1) // num_cols
-        for row in range(num_rows):
-            self.results_list.rowconfigure(row, weight=1)
 
     # =========================================================================
     # PRIVATE HELPERS
