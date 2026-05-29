@@ -11,6 +11,7 @@ from market_data import (
     save_cache,
     load_cache,
     find_sets_from_words,
+    top_priced_parts,
 )
 
 
@@ -95,6 +96,10 @@ class AppController:
         else:
             self.gui.update_status("No data \u2014 click Refresh", "red")
 
+        # Populate the always-visible top-items panel from the cache
+        # (shows a placeholder if no data was loaded).
+        self._refresh_top_items()
+
         # Restore saved capture region if one exists. Done before the
         # suggested-highlight update so the next-step logic sees the
         # restored region and suggests "In Game" rather than "Region".
@@ -140,6 +145,7 @@ class AppController:
         num_sets = len(cache["sets"])
         self.gui.set_refresh_busy(False)
         self.gui.update_status(f"{num_sets} sets loaded (fresh)", "green")
+        self._refresh_top_items()
         self._update_suggested_highlight()
 
     def _on_data_error(self, error_msg):
@@ -147,6 +153,18 @@ class AppController:
         self.gui.set_refresh_busy(False)
         self.gui.update_status(f"Error: {error_msg[:30]}", "red")
         self._update_suggested_highlight()
+
+    def _refresh_top_items(self):
+        """
+        Recompute the highest-priced individual parts from the current
+        cache and push them to the always-visible top-items panel.
+        Passes an empty list when no data is loaded so the panel shows
+        its placeholder.
+        """
+        if not self.market_data:
+            self.gui.update_top_items([])
+            return
+        self.gui.update_top_items(top_priced_parts(self.market_data, n=5))
 
     # =========================================================================
     # SUGGESTED HIGHLIGHT — guide the user through the setup flow

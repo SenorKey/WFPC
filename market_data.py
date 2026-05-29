@@ -302,6 +302,29 @@ def find_sets_from_words(cache_data, ocr_words):
     return results
 
 
+def top_priced_parts(cache_data, n=5):
+    """
+    Return the n highest-priced individual prime parts across the whole
+    cache, sorted by best buy price (highest first).
+
+    Full "Set" entries are deliberately excluded: relics drop individual
+    parts, not assembled sets, so a player choosing which relics to farm
+    cares about the most valuable *parts*. Items with no online buyers
+    (best_buy_price is None) are skipped.
+
+    Each returned dict is the same item dict stored in the cache
+    ("name", "slug", "best_buy_price").
+    """
+    items = [
+        item
+        for set_items in cache_data["sets"].values()
+        for item in set_items
+        if item["best_buy_price"] is not None and "Set" not in item["name"]
+    ]
+    items.sort(key=lambda x: x["best_buy_price"], reverse=True)
+    return items[:n]
+
+
 def break_down_set(items):
     """
     Given a list of items belonging to one prime set, separate the

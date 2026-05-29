@@ -785,8 +785,17 @@ class WFPC(tk.Tk):
         accent_line = tk.Frame(self, bg=COLORS["border_dim"], height=1)
         accent_line.pack(fill="x", padx=10, pady=(4, 0))
 
-        self.results_frame = tk.Frame(self, bg=COLORS["bg_dark"])
-        self.results_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        # Horizontal row holding the capture results (left, expanding) and
+        # the always-visible top-items panel (right, fixed width).
+        content_row = tk.Frame(self, bg=COLORS["bg"])
+        content_row.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        # Build the fixed-width side panel first so it reserves its width;
+        # the results frame then expands into whatever space remains.
+        self._build_top_items_panel(content_row)
+
+        self.results_frame = tk.Frame(content_row, bg=COLORS["bg_dark"])
+        self.results_frame.pack(side="left", fill="both", expand=True)
 
         # Scrollbar sits flush against the right edge
         scrollbar = tk.Scrollbar(
@@ -828,9 +837,114 @@ class WFPC(tk.Tk):
         # Show placeholder on first launch
         self.show_message("Take a screenshot to look up prices.")
 
+    # Fixed width of the top-items side panel. Sized so the wrapped item
+    # names fit comfortably while leaving room for the results column.
+    _TOP_PANEL_WIDTH = 200
+
+    def _build_top_items_panel(self, parent):
+        """
+        Build the always-visible side panel listing the highest-priced
+        individual prime parts. Sits on the right of the content row at a
+        fixed width; rows are (re)populated by update_top_items().
+        """
+        panel = tk.Frame(
+            parent, bg=COLORS["bg_dark"], width=self._TOP_PANEL_WIDTH
+        )
+        panel.pack(side="right", fill="y", padx=(8, 0))
+        # Keep the panel at its fixed width regardless of child content
+        panel.pack_propagate(False)
+
+        # Gold accent strip along the top edge, matching result cards
+        tk.Frame(panel, bg=COLORS["border"], height=2).pack(fill="x")
+
+        # Header
+        tk.Label(
+            panel,
+            text="Top Items",
+            bg=COLORS["bg_dark"],
+            fg=COLORS["border"],
+            font=("Consolas", 11, "bold"),
+            anchor="w",
+        ).pack(fill="x", padx=10, pady=(8, 0))
+
+        tk.Label(
+            panel,
+            text="highest buy prices",
+            bg=COLORS["bg_dark"],
+            fg=COLORS["text_dim"],
+            font=("Consolas", 8),
+            anchor="w",
+        ).pack(fill="x", padx=10, pady=(0, 4))
+
+        # Separator under header
+        tk.Frame(panel, bg=COLORS["separator"], height=1).pack(
+            fill="x", padx=10, pady=(0, 4)
+        )
+
+        # Container that update_top_items() clears and rebuilds
+        self.top_items_list = tk.Frame(panel, bg=COLORS["bg_dark"])
+        self.top_items_list.pack(fill="both", expand=True)
+
+        # Initial state until the controller pushes data
+        self._show_top_items_placeholder("Refresh to see top items")
+
+    def _show_top_items_placeholder(self, text):
+        """Show a centered dim message in the top-items panel."""
+        for widget in self.top_items_list.winfo_children():
+            widget.destroy()
+        tk.Label(
+            self.top_items_list,
+            text=text,
+            bg=COLORS["bg_dark"],
+            fg=COLORS["text_dim"],
+            font=("Consolas", 9),
+            wraplength=self._TOP_PANEL_WIDTH - 30,
+            justify="center",
+        ).pack(pady=24, padx=10)
+
     # =========================================================================
     # PUBLIC DISPLAY METHODS — called by the controller
     # =========================================================================
+
+    def update_top_items(self, items):
+        """
+        Populate the top-items side panel with a ranked list of the
+        highest-priced parts. Each item is a dict with "name" and
+        "best_buy_price". An empty list shows the placeholder instead.
+        """
+        for widget in self.top_items_list.winfo_children():
+            widget.destroy()
+
+        if not items:
+            self._show_top_items_placeholder("Refresh to see top items")
+            return
+
+        for rank, item in enumerate(items, 1):
+            row = tk.Frame(self.top_items_list, bg=COLORS["bg_card"])
+            row.pack(fill="x", padx=6, pady=3)
+
+            # Drop the redundant " Prime " to save horizontal space
+            short_name = item["name"].replace(" Prime ", " ")
+
+            tk.Label(
+                row,
+                text=f"{rank}. {short_name}",
+                bg=COLORS["bg_card"],
+                fg=COLORS["text_muted"],
+                font=("Consolas", 9),
+                anchor="w",
+                justify="left",
+                wraplength=self._TOP_PANEL_WIDTH - 35,
+            ).pack(fill="x", padx=6, pady=(4, 0))
+
+            tk.Label(
+                row,
+                text=f"{item['best_buy_price']}p",
+                bg=COLORS["bg_card"],
+                fg=COLORS["border"],
+                font=("Consolas", 10, "bold"),
+                anchor="w",
+            ).pack(fill="x", padx=6, pady=(0, 4))
 
     def update_status(self, text, color_key):
         """
