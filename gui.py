@@ -866,18 +866,16 @@ class WFPC(tk.Tk):
         win.deiconify()
         win.lift()
 
-    def display_results(self, matches):
+    def display_results(self, items):
         """
-        Display price results for each matched set inside individual
-        card-style panels that reflow responsively as the window resizes.
+        Display one card per matched reward item. Each card shows the
+        full item name, the item's own buy price, and the buy price of
+        the set it belongs to. Cards reflow responsively as the window
+        resizes; the most valuable reward (highest item buy price) is
+        highlighted so the best pick stands out.
 
-        Cards have a minimum width so text is never truncated, and a
-        maximum width so a single result looks like a card rather than
-        a full-width banner. The layout wraps cards into rows based on
-        available width, with vertical scrolling for overflow.
-
-        After building all cards, highlights the highest set price
-        (blue) and highest parts total (green).
+        `items` is the list of dicts returned by
+        market_data.find_items_from_boxes.
         """
         # Clear existing content and previous card tracking
         for widget in self.results_list.winfo_children():
@@ -885,15 +883,16 @@ class WFPC(tk.Tk):
         self._result_cards = []
         self._prev_num_cols = 0
 
-        # Track rows and their numeric values so we can highlight the best ones
-        set_price_rows = []
-        parts_total_rows = []
+        # Track the item-price rows so we can highlight the best one
+        item_price_rows = []
 
-        for prefix, items in matches.items():
-            breakdown = break_down_set(items)
+        for entry in items:
+            name = entry["name"]
+            buy_price = entry["buy_price"]
+            set_price = entry["set_buy_price"]
 
             # =================================================================
-            # CARD — each set gets a raised card frame with a gold top accent
+            # CARD — each reward gets a raised card with a gold top accent
             # =================================================================
 
             # Outer card container — this is what gets gridded during reflow
@@ -906,69 +905,36 @@ class WFPC(tk.Tk):
             card = tk.Frame(card_pad, bg=COLORS["bg_card"])
             card.pack(fill="both", expand=True)
 
-            # --- Set header (e.g. "Rhino Prime") ---
-            header_frame = tk.Frame(card, bg=COLORS["bg_card"])
-            header_frame.pack(fill="x", padx=10, pady=(10, 2))
-
+            # --- Item name header (full name, wraps within the card) ---
             tk.Label(
-                header_frame,
-                text=f"{prefix} Prime",
+                card,
+                text=name,
                 bg=COLORS["bg_card"],
                 fg=COLORS["border"],
                 font=("Consolas", 11, "bold"),
                 anchor="w",
-            ).pack(side="left")
-
-            tk.Label(
-                header_frame,
-                text="Buy",
-                bg=COLORS["bg_card"],
-                fg=COLORS["text_dim"],
-                font=("Consolas", 8),
-                anchor="e",
-            ).pack(side="right")
+                justify="left",
+                wraplength=self._CARD_WIDTH - 24,
+            ).pack(fill="x", padx=10, pady=(10, 2))
 
             # Separator under header
             tk.Frame(card, bg=COLORS["separator"], height=1).pack(
                 fill="x",
                 padx=10,
-                pady=(4, 4),
+                pady=(4, 6),
             )
 
-            # --- Individual parts ---
-            for part in breakdown["parts"]:
-                price = part["best_buy_price"]
-                price_str = f"{price}p" if price is not None else "\u2014"
-                short_name = part["name"].replace(f"{prefix} Prime ", "")
-                self._add_result_row(
-                    card, short_name, price_str, fg=COLORS["text_muted"]
-                )
-
-            # Separator before totals
-            tk.Frame(card, bg=COLORS["separator"], height=1).pack(
-                fill="x",
-                padx=10,
-                pady=(6, 4),
-            )
-
-            # --- Parts total ---
-            parts_sum = breakdown["parts_sum"]
-            sum_str = f"{parts_sum}p" if parts_sum is not None else "\u2014"
+            # --- Item buy price (this specific reward) ---
+            item_str = f"{buy_price}p" if buy_price is not None else "\u2014"
             row = self._add_result_row(
-                card, "Parts total", sum_str, fg=COLORS["green"], bold=True
+                card, "Item", item_str, fg=COLORS["text_muted"], bold=True
             )
-            if parts_sum is not None:
-                parts_total_rows.append((parts_sum, row))
+            if buy_price is not None:
+                item_price_rows.append((buy_price, row))
 
-            # --- Set price ---
-            if breakdown["set_item"]:
-                set_price = breakdown["set_item"]["best_buy_price"]
-                set_str = f"{set_price}p" if set_price is not None else "\u2014"
-                row = self._add_result_row(
-                    card, "Set price", set_str, fg=COLORS["green"], bold=True
-                )
-                if set_price is not None:
-                    set_price_rows.append((set_price, row))
+            # --- Set buy price (the full set this part belongs to) ---
+            set_str = f"{set_price}p" if set_price is not None else "\u2014"
+            self._add_result_row(card, "Set", set_str, fg=COLORS["green"])
 
             # Bottom padding inside the card
             tk.Frame(card, bg=COLORS["bg_card"], height=6).pack()
@@ -977,25 +943,22 @@ class WFPC(tk.Tk):
             self._result_cards.append(card_pad)
 
         # =================================================================
-        # HIGHLIGHT — apply subtle backgrounds to the best-value rows
+        # HIGHLIGHT — mark the most valuable reward (highest item price)
         # =================================================================
 
-        if set_price_rows:
-            best_set = max(set_price_rows, key=lambda x: x[0])
-            self._highlight_row(best_set[1], COLORS["hl_blue"])
-
-        if parts_total_rows:
-            best_total = max(parts_total_rows, key=lambda x: x[0])
-            self._highlight_row(best_total[1], COLORS["hl_green"])
+        if item_price_rows:
+            best = max(item_price_rows, key=lambda x: x[0])
+            self._highlight_row(best[1], COLORS["hl_green"])
 
         # Perform the initial layout and scroll to top
         self._reflow_cards()
         self.results_canvas.yview_moveto(0)
 
-    # Fixed result-card width. Sized to fit the longest item text
-    # ("Kavasa Prime Kubrow Collar Blueprint" → "Kubrow Collar Blueprint",
-    # 23 chars) plus its price, fully and without truncation — but no
-    # wider, so cards look like cards rather than full-width banners.
+    # Fixed result-card width. The full item-name header wraps to as many
+    # lines as it needs (via wraplength), so the width is chosen to look
+    # like a card rather than a full-width banner while still fitting the
+    # short "Item"/"Set" price rows. Four cards fit across the default
+    # window so a typical four-reward relic mission shows in one row.
     _CARD_WIDTH = 280
     _CARD_PAD = 4  # padding around each card on every side
 

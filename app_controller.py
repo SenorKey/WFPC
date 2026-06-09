@@ -5,12 +5,12 @@ import threading
 from PIL import Image
 from datetime import datetime
 
-from read_ss import read_boxes, draw_boxes, words_from_boxes
+from read_ss import read_boxes, draw_boxes
 from market_data import (
     fetch_all_prices,
     save_cache,
     load_cache,
-    find_sets_from_words,
+    find_items_from_boxes,
     top_priced_parts,
 )
 
@@ -411,10 +411,10 @@ class AppController:
     # =========================================================================
 
     def _process_screenshot(self, pil_image):
-        """Run OCR on the captured image and display matching set prices."""
+        """Run OCR on the captured image and display matching reward prices."""
         boxes = read_boxes(pil_image)
-        words = words_from_boxes(boxes)
-        print(f"OCR words: {words}")
+        box_texts = [text for _box, text, _score in boxes]
+        print(f"OCR boxes: {box_texts}")
 
         # Testing aid: show the detected text boxes drawn over the capture.
         if OCR_DEBUG:
@@ -423,13 +423,14 @@ class AppController:
             except Exception as e:
                 print(f"OCR debug view failed: {e}")
 
-        matches = find_sets_from_words(self.market_data, words)
+        # Match each detection box to the specific reward item it names.
+        items = find_items_from_boxes(self.market_data, box_texts)
 
-        if matches:
-            self.gui.display_results(matches)
+        if items:
+            self.gui.display_results(items)
         else:
             self.gui.show_message(
-                "No prime items recognized.\n" f"OCR read: {' '.join(words[:15])}"
+                "No prime items recognized.\n" f"OCR read: {' '.join(box_texts[:6])}"
             )
 
     # =========================================================================

@@ -2,6 +2,7 @@ import requests
 import json
 import os
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
@@ -296,30 +297,77 @@ def lookup_by_prefix(cache_data, search_term):
     return results
 
 
-def find_sets_from_words(cache_data, ocr_words):
+def _normalize_name(text):
     """
-    Given a list of words from OCR output, find which prime sets match.
-    A set matches if any word from OCR matches a word in its prefix.
+    Collapse a name to a comparison key: strip accents, lowercase, and
+    drop everything that isn't a letter or digit (spaces, '&', punctuation).
 
-    For example, if OCR produces ['Rhino', 'Galatine', 'junk'], this
-    returns the data for both the Rhino and Galatine prime sets.
-
-    Returns a dict of matching prefix → item list.
+    This makes matching tolerant of the OCR quirk where spaces between
+    words go missing — 'Braton Prime Stock' and 'BratonPrimeStock' both
+    normalize to 'bratonprimestock'.
     """
-    results = {}
-    # Build a lookup of individual prefix words → full prefix
-    # e.g. 'Nami' → 'Nami Skyla', 'Skyla' → 'Nami Skyla'
-    word_to_prefix = {}
-    for prefix in cache_data["sets"].keys():
-        for word in prefix.split():
-            word_to_prefix[word.lower()] = prefix
+    decomposed = unicodedata.normalize("NFD", text)
+    no_accents = "".join(c for c in decomposed if not unicodedata.combining(c))
+    return "".join(c for c in no_accents.lower() if c.isalnum())
 
-    for ocr_word in ocr_words:
-        cleaned = ocr_word.strip().lower()
-        if cleaned in word_to_prefix:
-            prefix = word_to_prefix[cleaned]
-            if prefix not in results:
-                results[prefix] = cache_data["sets"][prefix]
+
+def find_items_from_boxes(cache_data, box_texts):
+    """
+    Match each OCR detection box (one reward name per box) to the specific
+    cache item it names, and return per-reward price info.
+
+    Matching keys off the full item name including its part descriptor,
+    so a reward of 'Braton Prime Stock' resolves to that exact part rather
+    than just the Braton set. It is space/case/accent-insensitive (see
+    _normalize_name), so dropped OCR spaces still match.
+
+    The full 'Set' listings are excluded as match candidates — relic
+    rewards are always individual parts — but each matched part is paired
+    with its set's buy price for display.
+
+    Returns a list of dicts (deduped by item, in the order first seen):
+        {
+            "name":          full item name, e.g. 'Braton Prime Stock',
+            "buy_price":     the item's best buy price (or None),
+            "set_name":      the set prefix, e.g. 'Braton',
+            "set_buy_price": the 'Braton Prime Set' buy price (or None),
+        }
+    """
+    # Build normalized full item name -> (item, prefix), and remember each
+    # set's buy price by prefix. Skip the 'Set' entries as match targets.
+    norm_to_entry = {}
+    set_price_by_prefix = {}
+    for prefix, items in cache_data["sets"].items():
+        for item in items:
+            if "Set" in item["name"]:
+                set_price_by_prefix[prefix] = item["best_buy_price"]
+                continue
+            norm_to_entry[_normalize_name(item["name"])] = (item, prefix)
+
+    # Longest names first so a box matches the most specific item.
+    names_by_len = sorted(norm_to_entry, key=len, reverse=True)
+
+    seen = set()
+    results = []
+    for text in box_texts:
+        norm = _normalize_name(text)
+        if not norm:
+            continue
+        # A single box usually holds one reward name, but checking every
+        # candidate (rather than stopping at the first) also handles a box
+        # that merged two reward names together.
+        for name in names_by_len:
+            if name in norm:
+                item, prefix = norm_to_entry[name]
+                if item["slug"] in seen:
+                    continue
+                seen.add(item["slug"])
+                results.append({
+                    "name": item["name"],
+                    "buy_price": item["best_buy_price"],
+                    "set_name": prefix,
+                    "set_buy_price": set_price_by_prefix.get(prefix),
+                })
 
     return results
 
@@ -410,12 +458,12 @@ if __name__ == "__main__":
             price_str = f"{price}p" if price is not None else "no buyers"
             print(f"  {item['name']}: {price_str}")
 
-    # Quick test: simulate OCR words
-    print("\n--- Test OCR match: ['Rhino', 'Galatine', 'garbage'] ---")
-    ocr_results = find_sets_from_words(cache, ["Rhino", "Galatine", "garbage"])
-    for prefix, items in ocr_results.items():
-        print(f"\n{prefix} Prime:")
-        for item in items:
-            price = item["best_buy_price"]
-            price_str = f"{price}p" if price is not None else "no buyers"
-            print(f"  {item['name']}: {price_str}")
+    # Quick test: simulate OCR detection boxes → specific item matching
+    print("\n--- Test item match: per-reward boxes (incl. dropped spaces) ---")
+    boxes = ["Rhino Prime Blueprint", "GalatinePrimeBlade", "garbage"]
+    for r in find_items_from_boxes(cache, boxes):
+        ip = r["buy_price"]
+        sp = r["set_buy_price"]
+        ip_str = f"{ip}p" if ip is not None else "no buyers"
+        sp_str = f"{sp}p" if sp is not None else "no buyers"
+        print(f"  {r['name']}: item {ip_str} | {r['set_name']} set {sp_str}")
