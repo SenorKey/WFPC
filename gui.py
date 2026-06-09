@@ -89,13 +89,13 @@ class HoverButton(tk.Button):
 class MonitorPicker(tk.Toplevel):
     """
     Dialog that shows all available monitors as clickable thumbnail
-    previews, letting the user choose which screen to define the
-    capture region on. Each thumbnail is a small screenshot of that
-    monitor, captured right before the dialog is shown (while the
-    main GUI is hidden, so the game is visible behind).
+    previews, letting the user choose which screen to capture. Each
+    thumbnail is a small screenshot of that monitor, captured right
+    before the dialog is shown (while the main GUI is hidden, so the
+    game is visible behind).
 
     If there's only one monitor, the controller skips this dialog
-    entirely and goes straight to the RegionSelector.
+    entirely and uses that screen automatically.
     """
 
     THUMB_WIDTH = 220  # width of each monitor thumbnail in pixels
@@ -138,7 +138,7 @@ class MonitorPicker(tk.Toplevel):
         # Subtitle with instructions
         tk.Label(
             inner,
-            text="Choose which screen to define the capture region on",
+            text="Choose which screen the game is on",
             bg=COLORS["bg"],
             fg=COLORS["text_dim"],
             font=("Consolas", 9),
@@ -250,216 +250,6 @@ class MonitorPicker(tk.Toplevel):
         self.destroy()
         if callback:
             callback(None)
-
-
-# =============================================================================
-# REGION SELECTOR — fullscreen overlay for defining the capture area
-# =============================================================================
-
-
-class RegionSelector(tk.Toplevel):
-    """
-    Fullscreen overlay that lets the user drag a rectangle to define
-    the screen region that will be captured for OCR. Shows a darkened
-    screenshot of the chosen monitor as a backdrop so the user can see
-    exactly what area they're selecting. The selected coordinates are
-    returned as absolute screen positions via the on_complete callback.
-
-    The monitor parameter is a dict from mss (with 'left', 'top',
-    'width', 'height' keys) specifying which monitor to cover.
-    """
-
-    def __init__(self, master, monitor, on_complete):
-        super().__init__(master)
-        self.on_complete = on_complete
-        self.region = None
-        self.monitor = monitor
-
-        # Capture the selected monitor as a backdrop image
-        with mss.mss() as sct:
-            raw = sct.grab(self.monitor)
-            full_screenshot = Image.frombytes("RGB", raw.size, raw.rgb)
-
-        # Darken the screenshot so the selection rectangle stands out
-        self.dark_screenshot = ImageEnhance.Brightness(full_screenshot).enhance(0.3)
-
-        # Fullscreen borderless window covering the selected monitor
-        mon = self.monitor
-        self.overrideredirect(True)
-        self.geometry(f"{mon['width']}x{mon['height']}+{mon['left']}+{mon['top']}")
-        self.wm_attributes("-topmost", True)
-
-        # Canvas fills the entire window — we draw everything on it
-        self.canvas = tk.Canvas(
-            self,
-            width=mon["width"],
-            height=mon["height"],
-            highlightthickness=0,
-            cursor="crosshair",
-        )
-        self.canvas.pack()
-
-        # Draw the darkened screenshot as the canvas background
-        self.bg_photo = ImageTk.PhotoImage(self.dark_screenshot)
-        self.canvas.create_image(0, 0, anchor="nw", image=self.bg_photo)
-
-        # Instruction text centered near the top
-        self.canvas.create_text(
-            mon["width"] // 2,
-            40,
-            text="Click and drag to select the capture region  \u2022  ESC to cancel",
-            fill=COLORS["border"],
-            font=("Segoe UI", 13, "bold"),
-        )
-
-        # Drag state tracking
-        self.start_x = None
-        self.start_y = None
-        self.rect_id = None  # canvas rectangle item
-        self.dim_label_id = None  # dimensions text above the rectangle
-        self.confirm_win_id = None  # canvas window for accept/cancel buttons
-
-        # Mouse event bindings for click-drag selection
-        self.canvas.bind("<ButtonPress-1>", self._on_press)
-        self.canvas.bind("<B1-Motion>", self._on_drag)
-        self.canvas.bind("<ButtonRelease-1>", self._on_release)
-        self.bind("<Escape>", lambda e: self._finish(None))
-
-        # Force keyboard focus so ESC keybind actually works —
-        # overrideredirect windows don't receive focus automatically
-        self.focus_force()
-
-    def _on_press(self, event):
-        """Record the drag start point and clear any previous selection."""
-        self.start_x, self.start_y = event.x, event.y
-
-        # Clean up previous drawing if the user is re-dragging
-        for item_id in (self.rect_id, self.dim_label_id, self.confirm_win_id):
-            if item_id is not None:
-                self.canvas.delete(item_id)
-        self.rect_id = None
-        self.dim_label_id = None
-        self.confirm_win_id = None
-
-    def _on_drag(self, event):
-        """Draw the selection rectangle and show its dimensions as the user drags."""
-        if self.start_x is None:
-            return
-
-        # Clean up previous frame's rectangle and label
-        if self.rect_id:
-            self.canvas.delete(self.rect_id)
-        if self.dim_label_id:
-            self.canvas.delete(self.dim_label_id)
-
-        # Normalize coordinates so (x1,y1) is always the top-left corner
-        x1, y1 = min(self.start_x, event.x), min(self.start_y, event.y)
-        x2, y2 = max(self.start_x, event.x), max(self.start_y, event.y)
-
-        # Gold dashed rectangle showing the selected area
-        self.rect_id = self.canvas.create_rectangle(
-            x1,
-            y1,
-            x2,
-            y2,
-            outline=COLORS["border"],
-            width=2,
-            dash=(6, 4),
-        )
-
-        # Dimensions label above the rectangle
-        w, h = x2 - x1, y2 - y1
-        self.dim_label_id = self.canvas.create_text(
-            (x1 + x2) // 2,
-            max(y1 - 14, 10),
-            text=f"{w} \u00d7 {h}",
-            fill=COLORS["border"],
-            font=("Consolas", 10),
-        )
-
-    def _on_release(self, event):
-        """
-        When the user releases the mouse, finalize the rectangle and
-        show Accept / Cancel buttons just below it.
-        """
-        # Guard: if start_x is None, this release came from clicking
-        # the Accept/Cancel buttons — the event bubbled up to the
-        # canvas but _on_press never fired, so there's nothing to do.
-        if self.start_x is None:
-            return
-
-        x1, y1 = min(self.start_x, event.x), min(self.start_y, event.y)
-        x2, y2 = max(self.start_x, event.x), max(self.start_y, event.y)
-        w, h = x2 - x1, y2 - y1
-
-        # Ignore tiny accidental clicks
-        if w < 10 or h < 10:
-            return
-
-        # Convert canvas coordinates to absolute screen coordinates.
-        # The canvas (0,0) maps to the monitor's (left, top).
-        abs_x = self.monitor["left"] + x1
-        abs_y = self.monitor["top"] + y1
-        self.region = (abs_x, abs_y, w, h)
-
-        # Redraw the rectangle with a solid outline now that it's finalized
-        if self.rect_id:
-            self.canvas.delete(self.rect_id)
-        self.rect_id = self.canvas.create_rectangle(
-            x1,
-            y1,
-            x2,
-            y2,
-            outline=COLORS["border"],
-            width=2,
-        )
-
-        # Show accept/cancel buttons centered below the rectangle
-        btn_frame = tk.Frame(self.canvas, bg=COLORS["bg"])
-
-        HoverButton(
-            btn_frame,
-            text="\u2713  Accept",
-            command=lambda: self._finish(self.region),
-            normal_bg=COLORS["btn_primary"],
-            hover_bg=COLORS["btn_pri_hov"],
-            fg=COLORS["border"],
-            font=("Segoe UI", 11, "bold"),
-            relief="flat",
-            padx=14,
-            pady=5,
-            cursor="hand2",
-        ).pack(side="left", padx=(0, 6))
-
-        HoverButton(
-            btn_frame,
-            text="\u2715  Cancel",
-            command=lambda: self._finish(None),
-            normal_bg=COLORS["btn_close"],
-            hover_bg=COLORS["btn_close_hov"],
-            fg=COLORS["red"],
-            font=("Segoe UI", 11),
-            relief="flat",
-            padx=14,
-            pady=5,
-            cursor="hand2",
-        ).pack(side="left")
-
-        # Place the button frame on the canvas below the selection
-        btn_y = min(y2 + 20, self.monitor["height"] - 60)
-        self.confirm_win_id = self.canvas.create_window(
-            (x1 + x2) // 2,
-            btn_y,
-            window=btn_frame,
-            anchor="n",
-        )
-
-    def _finish(self, region):
-        """Close the selector and pass the result back to the callback."""
-        callback = self.on_complete
-        self.destroy()
-        if callback:
-            callback(region)
 
 
 # =============================================================================
@@ -609,10 +399,9 @@ class WFPC(tk.Tk):
     # =========================================================================
 
     def _build_ui(self):
-        """Build all UI sections: title bar, region info, buttons, results."""
+        """Build all UI sections: title bar, buttons, results."""
 
         self._build_title_bar()
-        self._build_region_bar()
         self._build_button_bar()
         self._build_results_panel()
 
@@ -670,39 +459,10 @@ class WFPC(tk.Tk):
         )
         self.status_label.pack(side="right", padx=(0, 2), pady=0)
 
-    def _build_region_bar(self):
-        """
-        Thin bar showing the currently defined capture region, or a
-        prompt to define one. Sits between the title bar and buttons.
-        """
-        self.region_bar = tk.Frame(self, bg=COLORS["bg_dark"], height=28)
-        self.region_bar.pack(fill="x", padx=10, pady=(6, 0))
-        self.region_bar.pack_propagate(False)
-
-        # Region icon — a small square symbol
-        tk.Label(
-            self.region_bar,
-            text="\u2b1c",
-            bg=COLORS["bg_dark"],
-            fg=COLORS["text_dim"],
-            font=("Consolas", 8),
-        ).pack(side="left", padx=(8, 4))
-
-        # Region status text (updated dynamically)
-        self.region_label = tk.Label(
-            self.region_bar,
-            text="No capture region defined \u2014 click Region to set one",
-            bg=COLORS["bg_dark"],
-            fg=COLORS["text_dim"],
-            font=("Consolas", 9),
-            anchor="w",
-        )
-        self.region_label.pack(side="left", padx=(0, 8))
-
     def _build_button_bar(self):
         """
         Action buttons ordered left-to-right by typical first-use flow:
-        Refresh Data → Define Region → In Game → Clear → (gap) → Close.
+        Refresh Data → In Game → Clear → (gap) → Close.
         All action buttons start with the default style; the controller
         calls highlight_suggested() after startup to mark the next step.
         """
@@ -725,20 +485,6 @@ class WFPC(tk.Tk):
             cursor="hand2",
         )
         self.refresh_btn.pack(side="left", padx=(0, 6))
-
-        # Define Region — second step: pick the screen capture area
-        self.region_btn = HoverButton(
-            button_frame,
-            text="\u2b1c  Region",
-            command=lambda: self.controller.define_region(),
-            fg=COLORS["text"],
-            font=btn_font,
-            relief="flat",
-            padx=14,
-            pady=5,
-            cursor="hand2",
-        )
-        self.region_btn.pack(side="left", padx=(0, 6))
 
         # In Game — third step: switch to minimal overlay for capturing
         self.ingame_btn = HoverButton(
@@ -1020,26 +766,17 @@ class WFPC(tk.Tk):
         self.status_label.config(text=text, fg=color)
         self._status_dot.config(fg=color)
 
-    def update_region_display(self, text, defined=True):
-        """
-        Update the region bar to show the current capture region info.
-        When defined=True, shows in green; otherwise dim placeholder text.
-        """
-        fg = COLORS["green"] if defined else COLORS["text_dim"]
-        self.region_label.config(text=text, fg=fg)
-
     def highlight_suggested(self, name):
         """
         Highlight a single button as the suggested next action.
         The named button gets the gold-tinted primary style; all
         other action buttons revert to the default gray style.
 
-        Valid names: 'refresh', 'region', 'ingame', or None to
-        clear all highlights.
+        Valid names: 'refresh', 'ingame', or None to clear all
+        highlights.
         """
         buttons = {
             "refresh": self.refresh_btn,
-            "region": self.region_btn,
             "ingame": self.ingame_btn,
         }
         for key, btn in buttons.items():
@@ -1060,10 +797,6 @@ class WFPC(tk.Tk):
     def show_monitor_picker(self, on_select):
         """Create and display the monitor selection dialog."""
         MonitorPicker(self, on_select)
-
-    def show_region_selector(self, monitor, on_complete):
-        """Create and display the fullscreen region selection overlay."""
-        RegionSelector(self, monitor, on_complete)
 
     def show_in_game_overlay(self, on_capture, on_back, monitor=None):
         """Create and display the minimal in-game floating panel."""
@@ -1090,6 +823,48 @@ class WFPC(tk.Tk):
         ).pack(anchor="center")
 
         self.results_canvas.yview_moveto(0)
+
+    def show_ocr_debug(self, annotated_image):
+        """
+        Pop up a window showing the captured region with the OCR text
+        boxes drawn on it (for testing). `annotated_image` is a PIL image
+        already annotated by read_ss.draw_boxes(). The window is reused on
+        subsequent captures so it doesn't stack up.
+
+        Large captures (e.g. a full 3440x1440 grab) are scaled down to fit
+        the screen while keeping aspect ratio.
+        """
+        img = annotated_image
+
+        # Scale down to fit comfortably on screen while keeping aspect.
+        max_w = min(1400, self.winfo_screenwidth() - 80)
+        max_h = self.winfo_screenheight() - 120
+        scale = min(max_w / img.width, max_h / img.height, 1.0)
+        if scale < 1.0:
+            img = img.resize(
+                (max(1, int(img.width * scale)), max(1, int(img.height * scale))),
+                Image.LANCZOS,
+            )
+
+        photo = ImageTk.PhotoImage(img)
+
+        win = getattr(self, "_ocr_debug_win", None)
+        if win is None or not win.winfo_exists():
+            win = tk.Toplevel(self)
+            win.title("OCR Debug — detected text boxes")
+            win.configure(bg=COLORS["bg_dark"])
+            label = tk.Label(win, bg=COLORS["bg_dark"], bd=0)
+            label.pack(padx=8, pady=8)
+            self._ocr_debug_win = win
+            self._ocr_debug_label = label
+        else:
+            label = self._ocr_debug_label
+
+        # Keep a reference so the image isn't garbage-collected.
+        self._ocr_debug_photo = photo
+        label.configure(image=photo)
+        win.deiconify()
+        win.lift()
 
     def display_results(self, matches):
         """

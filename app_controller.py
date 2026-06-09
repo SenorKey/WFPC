@@ -5,7 +5,7 @@ import threading
 from PIL import Image
 from datetime import datetime
 
-from read_ss import extract_words
+from read_ss import read_boxes, draw_boxes, words_from_boxes
 from market_data import (
     fetch_all_prices,
     save_cache,
@@ -16,6 +16,19 @@ from market_data import (
 
 
 REGION_CACHE_FILE = "region_cache.json"
+
+# When True, every capture pops up a window showing the detected OCR text
+# boxes drawn over the captured region. Handy for tuning/testing how
+# RapidOCR is reading the screen; set to False for normal use.
+OCR_DEBUG = True
+
+# Fraction of each screen edge to crop off when auto-computing the capture
+# region. The relic reward names sit in the center of the screen, so we
+# keep the middle 70% (height) x 60% (width) and drop the edges.
+CROP_TOP = 0.15
+CROP_BOTTOM = 0.15
+CROP_LEFT = 0.20
+CROP_RIGHT = 0.20
 
 
 class AppController:
@@ -164,7 +177,7 @@ class AppController:
         if not self.market_data:
             self.gui.update_top_items([])
             return
-        self.gui.update_top_items(top_priced_parts(self.market_data, n=5))
+        self.gui.update_top_items(top_priced_parts(self.market_data, n=15))
 
     # =========================================================================
     # SUGGESTED HIGHLIGHT — guide the user through the setup flow
@@ -193,94 +206,69 @@ class AppController:
 
         Priority order:
           1. Refresh — if no market data or data is older than 5 days
-          2. Region  — if data is fresh but no capture region is defined
-          3. In Game — if both data and region are ready to go
+          2. In Game — once data is ready (the capture region is figured
+             out automatically, so there's no separate region step)
         """
         if not self.market_data or self._data_is_stale():
             self.gui.highlight_suggested("refresh")
-        elif not self.capture_region:
-            self.gui.highlight_suggested("region")
         else:
             self.gui.highlight_suggested("ingame")
 
     # =========================================================================
-    # REGION DEFINITION — monitor picker then rectangle drawing
+    # CAPTURE REGION — auto center-crop of the chosen monitor
     # =========================================================================
 
-    def define_region(self):
+    def _center_region(self, monitor):
         """
-        Begin the region definition flow. Hides the main GUI first
-        (so it's not visible in screenshots), then either:
-          - If only one monitor: skip straight to the region selector
-          - If multiple monitors: show the monitor picker dialog first
+        Compute an (x, y, w, h) capture region covering the center of the
+        given mss monitor: CROP_* fractions are trimmed off each edge,
+        leaving the middle of the screen where the relic rewards appear.
+        Coordinates are absolute (offset by the monitor's left/top) so
+        they work directly with mss.grab.
         """
-        self.gui.withdraw()
-        self.gui.update()
-        # Brief delay so the OS finishes hiding the window before
-        # we screenshot the desktop for the selector/picker backdrop
-        self.gui.after(200, self._begin_region_flow)
+        mw, mh = monitor["width"], monitor["height"]
+        x = monitor["left"] + int(mw * CROP_LEFT)
+        y = monitor["top"] + int(mh * CROP_TOP)
+        w = mw - int(mw * CROP_LEFT) - int(mw * CROP_RIGHT)
+        h = mh - int(mh * CROP_TOP) - int(mh * CROP_BOTTOM)
+        return (x, y, w, h)
 
-    def _begin_region_flow(self):
+    def _set_monitor(self, monitor):
         """
-        Check how many monitors are available and decide whether to
-        show the picker or go straight to the region selector.
+        Store the chosen monitor, derive its center capture region, and
+        persist the choice so it's remembered next session.
         """
+        self.capture_monitor = monitor
+        self.capture_region = self._center_region(monitor)
+        self.region_timestamp = datetime.now().isoformat()
+        self._save_region()
+
+    def _ensure_capture_ready(self, on_ready):
+        """
+        Make sure a capture monitor + region are set, then run on_ready().
+
+        Single-monitor systems resolve silently. Multi-monitor systems
+        show the monitor picker the first time so the user can say which
+        screen the game is on; that choice is saved and reused afterwards.
+        """
+        if self.capture_monitor and self.capture_region:
+            on_ready()
+            return
+
         with mss.mss() as sct:
             monitors = sct.monitors[1:]  # skip index 0 (virtual/combined)
 
         if len(monitors) == 1:
-            # Single monitor — skip the picker, go straight to selector
-            self._on_monitor_selected(monitors[0])
+            self._set_monitor(monitors[0])
+            on_ready()
         else:
-            # Multiple monitors — let the user pick which one
-            self.gui.show_monitor_picker(self._on_monitor_selected)
+            def picked(monitor):
+                if monitor is None:
+                    return  # cancelled — stay on the main screen
+                self._set_monitor(monitor)
+                on_ready()
 
-    def _on_monitor_selected(self, monitor):
-        """
-        Callback from the monitor picker (or called directly for
-        single-monitor setups). Receives an mss monitor dict, or
-        None if the user cancelled the picker.
-        """
-        if monitor is None:
-            # User cancelled — bring back the main window
-            self.gui.deiconify()
-            self.gui.update()
-            return
-
-        # Store the selected monitor for later use (in-game overlay positioning)
-        self.capture_monitor = monitor
-
-        # Brief delay to let the monitor picker fully disappear from
-        # the screen before we screenshot the monitor for the selector
-        self.gui.after(150, lambda: self._open_region_selector(monitor))
-
-    def _open_region_selector(self, monitor):
-        """Create the region selector overlay on the chosen monitor."""
-        self.gui.show_region_selector(monitor, self._on_region_defined)
-
-    def _on_region_defined(self, region):
-        """
-        Callback from the region selector. Receives (x, y, w, h) in
-        absolute screen coordinates, or None if the user cancelled.
-        """
-        if region:
-            self.capture_region = region
-            # Stamp the region with the current time and save it to
-            # disk so it survives across sessions
-            self.region_timestamp = datetime.now().isoformat()
-            self._save_region()
-
-            x, y, w, h = region
-            date_str = self.region_timestamp[:10]
-            self.gui.update_region_display(
-                f"Region: {w}\u00d7{h} at ({x}, {y}) \u2014 saved {date_str}",
-                defined=True,
-            )
-            print(f"Capture region defined: {w}x{h} at ({x}, {y})")
-        # Bring back the main window whether they accepted or cancelled
-        self.gui.deiconify()
-        self.gui.update()
-        self._update_suggested_highlight()
+            self.gui.show_monitor_picker(picked)
 
     # =========================================================================
     # REGION PERSISTENCE — save/load to JSON between sessions
@@ -311,10 +299,11 @@ class AppController:
 
     def _load_region(self):
         """
-        Restore the capture region, monitor, and save timestamp from
-        disk if a saved file exists. Updates the GUI region bar with
-        the loaded values. Silently does nothing if the file is missing
-        or malformed — the user can always redefine via the Region button.
+        Restore the saved capture monitor from disk (if present) and
+        recompute the center-crop region from it, so the current crop
+        math applies even to choices saved by older versions. Silently
+        does nothing if the file is missing or malformed — the monitor
+        picker resolves it on first use instead.
         """
         if not os.path.exists(REGION_CACHE_FILE):
             return
@@ -322,23 +311,17 @@ class AppController:
             with open(REGION_CACHE_FILE, "r") as f:
                 data = json.load(f)
 
-            self.capture_region = tuple(data["region"])
             self.capture_monitor = data.get("monitor")
             self.region_timestamp = data.get("timestamp")
 
-            x, y, w, h = self.capture_region
+            if self.capture_monitor:
+                self.capture_region = self._center_region(self.capture_monitor)
+            elif data.get("region"):
+                self.capture_region = tuple(data["region"])
 
-            # Format the saved-on date if we have a timestamp
-            if self.region_timestamp:
-                date_str = self.region_timestamp[:10]
-                display_text = (
-                    f"Region: {w}\u00d7{h} at ({x}, {y}) \u2014 saved {date_str}"
-                )
-            else:
-                display_text = f"Region: {w}\u00d7{h} at ({x}, {y})"
-
-            self.gui.update_region_display(display_text, defined=True)
-            print(f"Loaded saved region: {w}x{h} at ({x}, {y})")
+            if self.capture_region:
+                x, y, w, h = self.capture_region
+                print(f"Restored capture region: {w}x{h} at ({x}, {y})")
         except Exception as e:
             print(f"Failed to load saved region: {e}")
 
@@ -349,17 +332,14 @@ class AppController:
     def enter_in_game_mode(self):
         """
         Switch to in-game mode: hide the main GUI and show a small
-        floating panel with Capture and Back buttons. Requires a
-        capture region to be defined first. The overlay is placed
-        on the same monitor the user selected for their region.
+        floating panel with Capture and Back buttons. Ensures a capture
+        monitor/region is set first (prompting the monitor picker on
+        multi-monitor systems), then shows the overlay on that monitor.
         """
-        if not self.capture_region:
-            self.gui.show_message(
-                "No capture region defined.\n"
-                "Click 'Region' to define the area first."
-            )
-            return
+        self._ensure_capture_ready(self._show_in_game_overlay)
 
+    def _show_in_game_overlay(self):
+        """Hide the main GUI and bring up the in-game capture overlay."""
         self.gui.withdraw()
         self.gui.update()
         self.gui.show_in_game_overlay(
@@ -432,8 +412,16 @@ class AppController:
 
     def _process_screenshot(self, pil_image):
         """Run OCR on the captured image and display matching set prices."""
-        words = extract_words(pil_image)
+        boxes = read_boxes(pil_image)
+        words = words_from_boxes(boxes)
         print(f"OCR words: {words}")
+
+        # Testing aid: show the detected text boxes drawn over the capture.
+        if OCR_DEBUG:
+            try:
+                self.gui.show_ocr_debug(draw_boxes(pil_image, boxes))
+            except Exception as e:
+                print(f"OCR debug view failed: {e}")
 
         matches = find_sets_from_words(self.market_data, words)
 
