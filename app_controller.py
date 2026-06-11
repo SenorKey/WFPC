@@ -30,6 +30,12 @@ CROP_BOTTOM = 0.15
 CROP_LEFT = 0.20
 CROP_RIGHT = 0.20
 
+# After an in-game capture, how long (in milliseconds) to leave the full
+# results window up before automatically flipping back to the minimal
+# top-right overlay, ready for the next relic reward screen. Only applies
+# to captures triggered from the in-game overlay, not the main window.
+AUTO_INGAME_DELAY_MS = 30000
+
 
 class AppController:
     """
@@ -335,7 +341,11 @@ class AppController:
         floating panel with Capture and Back buttons. Ensures a capture
         monitor/region is set first (prompting the monitor picker on
         multi-monitor systems), then shows the overlay on that monitor.
+
+        Also used as the auto-return target after an in-game capture, so
+        we stop any running countdown here to avoid stacking.
         """
+        self.gui.stop_ingame_countdown()
         self._ensure_capture_ready(self._show_in_game_overlay)
 
     def _show_in_game_overlay(self):
@@ -365,8 +375,17 @@ class AppController:
         self.gui.update()
         self._update_suggested_highlight()
 
+        # Start the auto-return countdown so that, after reviewing the
+        # prices, the In Game button ticks down and then flips back to the
+        # minimal overlay, ready for the next relic screen without any
+        # further clicks. The GUI owns the per-second label updates.
+        self.gui.start_ingame_countdown(
+            AUTO_INGAME_DELAY_MS // 1000, self.enter_in_game_mode
+        )
+
     def _exit_in_game_mode(self):
         """Leave in-game mode and restore the main GUI."""
+        self.gui.stop_ingame_countdown()
         self.gui.deiconify()
         self.gui.update()
         self._update_suggested_highlight()

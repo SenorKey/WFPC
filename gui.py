@@ -388,6 +388,18 @@ class WFPC(tk.Tk):
         self._result_cards = []
         self._prev_num_cols = 0
 
+        # Auto-return countdown state. When an in-game capture finishes,
+        # the In Game button counts down ("In Game  30s...") and then
+        # flips back to the overlay. _countdown_after_id is the pending
+        # tick's 'after' id (None when no countdown is running),
+        # _countdown_on_fire is the callback to run at zero, and
+        # _ingame_hovering tracks whether the cursor is over the button
+        # so a hover can show "Cancel" instead of the countdown.
+        self._countdown_after_id = None
+        self._countdown_remaining = 0
+        self._countdown_on_fire = None
+        self._ingame_hovering = False
+
         self._build_ui()
 
     def set_controller(self, controller):
@@ -490,7 +502,7 @@ class WFPC(tk.Tk):
         self.ingame_btn = HoverButton(
             button_frame,
             text="\u25b8  In Game",
-            command=lambda: self.controller.enter_in_game_mode(),
+            command=self._ingame_button_clicked,
             fg=COLORS["text"],
             font=btn_font,
             relief="flat",
@@ -499,6 +511,10 @@ class WFPC(tk.Tk):
             cursor="hand2",
         )
         self.ingame_btn.pack(side="left", padx=(0, 6))
+        # Extra hover handlers (add="+" so HoverButton's color swap still
+        # runs) to show "Cancel" while the auto-return countdown is active.
+        self.ingame_btn.bind("<Enter>", self._ingame_hover_enter, add="+")
+        self.ingame_btn.bind("<Leave>", self._ingame_hover_leave, add="+")
 
         # Clear — reset results after viewing
         self.clear_btn = HoverButton(
@@ -786,6 +802,82 @@ class WFPC(tk.Tk):
                 )
             else:
                 btn.set_style(COLORS["btn"], COLORS["btn_hover"], fg=COLORS["text"])
+
+    # =========================================================================
+    # AUTO-RETURN COUNTDOWN — In Game button ticks down then flips to overlay
+    # =========================================================================
+
+    _INGAME_TEXT = "▸  In Game"
+    _INGAME_CANCEL_TEXT = "✕  Cancel"
+
+    def _ingame_button_clicked(self):
+        """
+        Route a click on the In Game button. While the auto-return
+        countdown is running the button acts as a Cancel (stop the
+        countdown, stay in the main window); otherwise it enters
+        in-game mode as usual.
+        """
+        if self._countdown_after_id is not None:
+            self.stop_ingame_countdown()
+        else:
+            self.controller.enter_in_game_mode()
+
+    def start_ingame_countdown(self, seconds, on_fire):
+        """
+        Begin counting down on the In Game button. Each second the label
+        updates ("In Game  30s...", "29s...", ...); at zero, on_fire()
+        runs (the controller's enter_in_game_mode). Any existing
+        countdown is cleared first so back-to-back captures don't stack.
+        """
+        self.stop_ingame_countdown()
+        self._countdown_remaining = seconds
+        self._countdown_on_fire = on_fire
+        self._countdown_tick()
+
+    def _countdown_tick(self):
+        """Update the button label once per second, then fire at zero."""
+        if self._countdown_remaining <= 0:
+            on_fire = self._countdown_on_fire
+            self._clear_countdown_state()
+            if on_fire:
+                on_fire()
+            return
+
+        # While the cursor is over the button we leave it reading
+        # "Cancel" instead of flashing the countdown out from under it.
+        if not self._ingame_hovering:
+            self.ingame_btn.config(
+                text=f"{self._INGAME_TEXT}  {self._countdown_remaining}s..."
+            )
+        self._countdown_remaining -= 1
+        self._countdown_after_id = self.after(1000, self._countdown_tick)
+
+    def stop_ingame_countdown(self):
+        """Cancel a running auto-return countdown, if any, and reset the label."""
+        if self._countdown_after_id is not None:
+            self.after_cancel(self._countdown_after_id)
+        self._clear_countdown_state()
+
+    def _clear_countdown_state(self):
+        """Reset countdown bookkeeping and restore the default button label."""
+        self._countdown_after_id = None
+        self._countdown_remaining = 0
+        self._countdown_on_fire = None
+        self.ingame_btn.config(text=self._INGAME_TEXT)
+
+    def _ingame_hover_enter(self, event):
+        """Show 'Cancel' while hovering during an active countdown."""
+        self._ingame_hovering = True
+        if self._countdown_after_id is not None:
+            self.ingame_btn.config(text=self._INGAME_CANCEL_TEXT)
+
+    def _ingame_hover_leave(self, event):
+        """Restore the countdown label when the cursor leaves mid-countdown."""
+        self._ingame_hovering = False
+        if self._countdown_after_id is not None:
+            self.ingame_btn.config(
+                text=f"{self._INGAME_TEXT}  {self._countdown_remaining + 1}s..."
+            )
 
     def set_refresh_busy(self, busy):
         """Disable or re-enable the refresh button and update its label."""
