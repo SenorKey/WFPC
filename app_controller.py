@@ -423,8 +423,10 @@ class AppController:
             except Exception as e:
                 print(f"OCR debug view failed: {e}")
 
-        # Match each detection box to the specific reward item it names.
-        items = find_items_from_boxes(self.market_data, box_texts)
+        # Match detections to specific reward items. Pass the full boxes
+        # (not just text) so the matcher can stitch back names that wrapped
+        # onto two lines using each box's position.
+        items = find_items_from_boxes(self.market_data, boxes)
 
         if items:
             self.gui.display_results(items)

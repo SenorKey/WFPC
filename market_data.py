@@ -311,15 +311,39 @@ def _normalize_name(text):
     return "".join(c for c in no_accents.lower() if c.isalnum())
 
 
-def find_items_from_boxes(cache_data, box_texts):
+def _bbox(box):
+    """Axis-aligned bounds (x0, y0, x1, y1) of a 4-point OCR box."""
+    xs = [p[0] for p in box]
+    ys = [p[1] for p in box]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _x_overlap(a, b):
+    """Width of the horizontal overlap between two bboxes (<=0 if none)."""
+    return min(a[2], b[2]) - max(a[0], b[0])
+
+
+def find_items_from_boxes(cache_data, detections):
     """
-    Match each OCR detection box (one reward name per box) to the specific
-    cache item it names, and return per-reward price info.
+    Match OCR detections to the specific reward items they name, and
+    return per-reward price info.
+
+    Each detection is a (box, text, score) tuple as returned by
+    read_ss.read_boxes, where box is four [x, y] corner points.
 
     Matching keys off the full item name including its part descriptor,
     so a reward of 'Braton Prime Stock' resolves to that exact part rather
     than just the Braton set. It is space/case/accent-insensitive (see
     _normalize_name), so dropped OCR spaces still match.
+
+    Two passes:
+      1. Match each detection on its own.
+      2. Stitch together leftovers from a name that wrapped onto two (or
+         more) lines. A wrapped name shows up as vertically stacked,
+         horizontally overlapping boxes (e.g. 'Sevagoth Prime Systems'
+         above 'Blueprint'); each leftover is grown downward — while it
+         still spells the start of a real item name — until the combined
+         text completes one.
 
     The full 'Set' listings are excluded as match candidates — relic
     rewards are always individual parts — but each matched part is paired
@@ -344,30 +368,101 @@ def find_items_from_boxes(cache_data, box_texts):
                 continue
             norm_to_entry[_normalize_name(item["name"])] = (item, prefix)
 
+    norm_names = list(norm_to_entry)
     # Longest names first so a box matches the most specific item.
-    names_by_len = sorted(norm_to_entry, key=len, reverse=True)
+    names_by_len = sorted(norm_names, key=len, reverse=True)
 
     seen = set()
     results = []
-    for text in box_texts:
+
+    def add_match(entry):
+        item, prefix = entry
+        if item["slug"] in seen:
+            return
+        seen.add(item["slug"])
+        results.append({
+            "name": item["name"],
+            "buy_price": item["best_buy_price"],
+            "set_name": prefix,
+            "set_buy_price": set_price_by_prefix.get(prefix),
+        })
+
+    def contained_entry(s):
+        """The (item, prefix) for the longest full name contained in s, if any."""
+        for name in names_by_len:
+            if name in s:
+                return norm_to_entry[name]
+        return None
+
+    def is_name_prefix(s):
+        """True if s is the leading part of some full item name."""
+        return any(name.startswith(s) for name in norm_names)
+
+    # --- Pass 1: match each detection on its own ---
+    leftovers = []  # [bbox, normalized_text] for fragments that didn't match
+    for box, text, _score in detections:
         norm = _normalize_name(text)
         if not norm:
             continue
         # A single box usually holds one reward name, but checking every
         # candidate (rather than stopping at the first) also handles a box
         # that merged two reward names together.
-        for name in names_by_len:
-            if name in norm:
-                item, prefix = norm_to_entry[name]
-                if item["slug"] in seen:
+        contained = [name for name in names_by_len if name in norm]
+        if contained:
+            for name in contained:
+                add_match(norm_to_entry[name])
+        else:
+            leftovers.append([_bbox(box), norm])
+
+    # --- Pass 2: stitch wrapped names back together from the leftovers ---
+    # Process top-to-bottom, left-to-right so a head line is seen before
+    # its continuation line.
+    order = sorted(
+        range(len(leftovers)),
+        key=lambda k: (leftovers[k][0][1], leftovers[k][0][0]),
+    )
+    used = set()
+    for i in order:
+        if i in used:
+            continue
+        head_bbox, acc = leftovers[i]
+        if not is_name_prefix(acc):
+            continue  # not the beginning of any item name — almost certainly junk
+
+        chain = [i]
+        last_bbox = head_bbox
+        entry = contained_entry(acc)
+
+        while entry is None:
+            # Find the nearest unused leftover sitting directly below the
+            # current box and overlapping it horizontally — the next
+            # wrapped line of the same name.
+            line_h = max(1, last_bbox[3] - last_bbox[1])
+            best, best_top = None, None
+            for j in order:
+                if j in used or j in chain:
                     continue
-                seen.add(item["slug"])
-                results.append({
-                    "name": item["name"],
-                    "buy_price": item["best_buy_price"],
-                    "set_name": prefix,
-                    "set_buy_price": set_price_by_prefix.get(prefix),
-                })
+                cb = leftovers[j][0]
+                below = cb[1] >= (last_bbox[1] + last_bbox[3]) / 2
+                near = (cb[1] - last_bbox[3]) <= line_h
+                if below and near and _x_overlap(last_bbox, cb) > 0:
+                    if best_top is None or cb[1] < best_top:
+                        best_top, best = cb[1], j
+            if best is None:
+                break
+
+            candidate = acc + leftovers[best][1]
+            ce = contained_entry(candidate)
+            if ce is None and not is_name_prefix(candidate):
+                break  # this continuation doesn't lead toward a real name
+            acc = candidate
+            chain.append(best)
+            last_bbox = leftovers[best][0]
+            entry = ce
+
+        if entry is not None:
+            add_match(entry)
+            used.update(chain)
 
     return results
 
@@ -458,10 +553,19 @@ if __name__ == "__main__":
             price_str = f"{price}p" if price is not None else "no buyers"
             print(f"  {item['name']}: {price_str}")
 
-    # Quick test: simulate OCR detection boxes → specific item matching
-    print("\n--- Test item match: per-reward boxes (incl. dropped spaces) ---")
-    boxes = ["Rhino Prime Blueprint", "GalatinePrimeBlade", "garbage"]
-    for r in find_items_from_boxes(cache, boxes):
+    # Quick test: simulate OCR detections → specific item matching.
+    # Detections are (box, text, score); box is four [x, y] corners.
+    print("\n--- Test item match: per-reward detections (incl. dropped spaces) ---")
+
+    def _det(text, x, y, w=200, h=30):
+        return ([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], text, 0.9)
+
+    detections = [
+        _det("Rhino Prime Blueprint", 0, 0),
+        _det("GalatinePrimeBlade", 220, 0),
+        _det("garbage", 440, 0),
+    ]
+    for r in find_items_from_boxes(cache, detections):
         ip = r["buy_price"]
         sp = r["set_buy_price"]
         ip_str = f"{ip}p" if ip is not None else "no buyers"
