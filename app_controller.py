@@ -25,8 +25,8 @@ OCR_DEBUG = True
 # Fraction of each screen edge to crop off when auto-computing the capture
 # region. The relic reward names sit in the center of the screen, so we
 # keep the middle 70% (height) x 60% (width) and drop the edges.
-CROP_TOP = 0.15
-CROP_BOTTOM = 0.15
+CROP_TOP = 0.25
+CROP_BOTTOM = 0.25
 CROP_LEFT = 0.20
 CROP_RIGHT = 0.20
 
@@ -235,7 +235,7 @@ class AppController:
         mw, mh = monitor["width"], monitor["height"]
         x = monitor["left"] + int(mw * CROP_LEFT)
         y = monitor["top"] + int(mh * CROP_TOP)
-        w = mw - int(mw * CROP_LEFT) - int(mw * CROP_RIGHT)
+        w = mw  # - int(mw * CROP_LEFT) - int(mw * CROP_RIGHT)
         h = mh - int(mh * CROP_TOP) - int(mh * CROP_BOTTOM)
         return (x, y, w, h)
 
@@ -268,6 +268,7 @@ class AppController:
             self._set_monitor(monitors[0])
             on_ready()
         else:
+
             def picked(monitor):
                 if monitor is None:
                     return  # cancelled — stay on the main screen
