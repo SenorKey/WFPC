@@ -28,15 +28,12 @@ OCR_DEBUG = False
 CROP_TOP = 0.20
 CROP_BOTTOM = 0.20
 
-# After an in-game capture, how long (in milliseconds) to leave the full
-# results window up before automatically flipping back to the minimal
-# top-right overlay, ready for the next relic reward screen. Only applies
-# to captures triggered from the in-game overlay, not the main window.
-AUTO_INGAME_DELAY_MS = 30000
-
-# How long (in milliseconds) the on-screen box drawn around the
-# highest-priced reward stays up after a capture before removing itself.
-HIGHLIGHT_DURATION_MS = 8000
+# How long (in milliseconds) everything a capture draws on screen — the
+# in-game results panel and the gold box around the highest-priced
+# reward — stays up before dismissing itself. The relic reward screen
+# gives players about 12 seconds to choose, so the info clears off the
+# screen right around when the pick locks in.
+IN_GAME_DISPLAY_MS = 12000
 
 
 class AppController:
@@ -76,6 +73,16 @@ class AppController:
         # region was defined. Persisted alongside the coordinates so
         # the user can see how old their saved region is.
         self.region_timestamp = None
+
+        # True while in-game mode is active (overlay up, main GUI
+        # hidden). Routes capture results and messages to the in-game
+        # results panel instead of only the hidden main window.
+        self.in_game_mode = False
+
+        # Debounce for the overlay's Capture button: since the overlay
+        # stays up after a click now, this stops a double-click from
+        # queueing two captures.
+        self._capture_pending = False
 
     # =========================================================================
     # MARKET DATA — loading, fetching, and cache staleness
@@ -344,15 +351,12 @@ class AppController:
         floating panel with Capture and Back buttons. Ensures a capture
         monitor/region is set first (prompting the monitor picker on
         multi-monitor systems), then shows the overlay on that monitor.
-
-        Also used as the auto-return target after an in-game capture, so
-        we stop any running countdown here to avoid stacking.
         """
-        self.gui.stop_ingame_countdown()
         self._ensure_capture_ready(self._show_in_game_overlay)
 
     def _show_in_game_overlay(self):
         """Hide the main GUI and bring up the in-game capture overlay."""
+        self.in_game_mode = True
         self.gui.withdraw()
         self.gui.update()
         self.gui.show_in_game_overlay(
@@ -363,32 +367,33 @@ class AppController:
 
     def _in_game_capture(self):
         """
-        Called when the user clicks Capture on the in-game overlay.
-        The overlay has already destroyed itself by this point, so we
-        wait briefly for it to disappear, then capture and process.
+        Called when the user clicks Capture on the in-game overlay. The
+        overlay itself stays up (it sits in the top strip the capture
+        crop trims away), but the results panel and gold highlight from
+        a previous capture reach into the captured band, so hide them
+        and give the screen a moment to repaint before grabbing.
         """
-        # Schedule the actual capture after a short delay so the
-        # overlay has time to fully disappear from the screen
+        if self._capture_pending:
+            return
+        self._capture_pending = True
+        self.gui.hide_in_game_results()
+        self.gui.hide_reward_highlight()
         self.gui.after(200, self._do_in_game_capture)
 
     def _do_in_game_capture(self):
-        """Perform the capture and bring back the main GUI with results."""
+        """
+        Perform the capture. Results (or a failure message) appear in
+        the in-game panel below the overlay — the main GUI stays hidden
+        and the overlay stays up, ready for the next capture.
+        """
+        self._capture_pending = False
         self._do_capture()
-        self.gui.deiconify()
-        self.gui.update()
-        self._update_suggested_highlight()
-
-        # Start the auto-return countdown so that, after reviewing the
-        # prices, the In Game button ticks down and then flips back to the
-        # minimal overlay, ready for the next relic screen without any
-        # further clicks. The GUI owns the per-second label updates.
-        self.gui.start_ingame_countdown(
-            AUTO_INGAME_DELAY_MS // 1000, self.enter_in_game_mode
-        )
 
     def _exit_in_game_mode(self):
         """Leave in-game mode and restore the main GUI."""
-        self.gui.stop_ingame_countdown()
+        self.in_game_mode = False
+        self.gui.hide_in_game_results()
+        self.gui.hide_reward_highlight()
         self.gui.deiconify()
         self.gui.update()
         self._update_suggested_highlight()
@@ -405,8 +410,11 @@ class AppController:
         """
         x, y, w, h = self.capture_region
 
-        # A highlight box from the previous capture would be photographed
-        # into this one if it were still up — remove it before grabbing.
+        # Anything drawn for the previous capture (results panel, gold
+        # highlight) would be photographed into this one if it were
+        # still up — make sure it's gone before grabbing. The in-game
+        # flow already hid these 200ms ago, so this is usually a no-op.
+        self.gui.hide_in_game_results()
         self.gui.hide_reward_highlight()
 
         try:
@@ -420,7 +428,7 @@ class AppController:
                 raw = sct.grab(region)
                 img = Image.frombytes("RGB", raw.size, raw.rgb)
         except Exception as e:
-            self.gui.show_message(f"Capture failed:\n{str(e)}")
+            self._show_capture_message(f"Capture failed:\n{str(e)}")
             return
 
         self.captured_image = img
@@ -430,7 +438,7 @@ class AppController:
         if self.market_data:
             self._process_screenshot(img)
         else:
-            self.gui.show_message("No market data loaded.\nClick 'Refresh' first.")
+            self._show_capture_message("No market data loaded.\nClick 'Refresh' first.")
 
     # =========================================================================
     # OCR + LOOKUP — extract words, match to sets, send results to GUI
@@ -456,10 +464,30 @@ class AppController:
 
         if items:
             self._highlight_best_reward(items, pil_image)
+            # The main window is always populated (so the results are
+            # there when it comes back); in-game mode additionally shows
+            # them in the panel under the overlay.
             self.gui.display_results(items)
+            if self.in_game_mode:
+                self.gui.show_in_game_results(
+                    items, self.capture_monitor, IN_GAME_DISPLAY_MS // 1000
+                )
         else:
-            self.gui.show_message(
+            self._show_capture_message(
                 "No prime items recognized.\n" f"OCR read: {' '.join(box_texts[:6])}"
+            )
+
+    def _show_capture_message(self, text):
+        """
+        Surface a capture status message where the user can actually
+        see it: the main results area always (so it's there when the
+        main window comes back), plus the in-game panel while the main
+        GUI is hidden.
+        """
+        self.gui.show_message(text)
+        if self.in_game_mode:
+            self.gui.show_in_game_message(
+                text, self.capture_monitor, IN_GAME_DISPLAY_MS // 1000
             )
 
     def _highlight_best_reward(self, items, pil_image):
@@ -494,7 +522,7 @@ class AppController:
             ry + int(y0 / scale_y),
             max(1, int((x1 - x0) / scale_x)),
             max(1, int((y1 - y0) / scale_y)),
-            HIGHLIGHT_DURATION_MS,
+            IN_GAME_DISPLAY_MS,
         )
 
     # =========================================================================

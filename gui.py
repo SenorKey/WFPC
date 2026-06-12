@@ -260,12 +260,18 @@ class InGameOverlay(tk.Toplevel):
     Small floating panel shown during in-game mode. Positioned in the
     top-right corner of the specified monitor with two buttons:
       - Capture: takes a screenshot of the stored region, runs OCR,
-                 then restores the main GUI with results displayed
-      - Back:    cancels in-game mode and restores the main GUI
+                 and shows the results in a panel directly below this
+                 overlay (the main GUI stays hidden)
+      - Back:    exits in-game mode and restores the main GUI
 
     The monitor parameter determines which screen the overlay appears
     on, so it shows up on the same monitor the user is gaming on.
     """
+
+    # Vertical offset from the top edge of the monitor. Sits below the
+    # game's own top-of-screen UI — the health bar during missions and
+    # the credits/platinum readout in menus.
+    TOP_MARGIN = 60
 
     def __init__(self, master, on_capture, on_back, monitor=None):
         super().__init__(master)
@@ -324,17 +330,22 @@ class InGameOverlay(tk.Toplevel):
         if monitor:
             right_edge = monitor["left"] + monitor["width"]
             top_edge = monitor["top"]
-            self.geometry(f"+{right_edge - overlay_w - 20}+{top_edge + 20}")
+            self.geometry(
+                f"+{right_edge - overlay_w - 20}+{top_edge + self.TOP_MARGIN}"
+            )
         else:
             screen_w = self.winfo_screenwidth()
-            self.geometry(f"+{screen_w - overlay_w - 20}+20")
+            self.geometry(f"+{screen_w - overlay_w - 20}+{self.TOP_MARGIN}")
 
     def _do_capture(self):
-        """Destroy the overlay and trigger the capture callback."""
-        callback = self.on_capture
-        self.destroy()
-        if callback:
-            callback()
+        """
+        Trigger the capture callback. The overlay stays up: it sits in
+        the top strip of the screen that the capture crop trims away,
+        so it can't photobomb the grab, and keeping it visible leaves
+        the next capture one click away.
+        """
+        if self.on_capture:
+            self.on_capture()
 
     def _do_back(self):
         """Destroy the overlay and return to the main GUI."""
@@ -342,6 +353,191 @@ class InGameOverlay(tk.Toplevel):
         self.destroy()
         if callback:
             callback()
+
+
+# =============================================================================
+# IN-GAME RESULTS PANEL — single-column reward cards under the overlay
+# =============================================================================
+
+
+class InGameResultsPanel(tk.Toplevel):
+    """
+    Vertical results panel shown below the in-game overlay after a
+    capture: one reward card per row, with a countdown in the header.
+    At zero the panel removes itself and reports via on_expire — sized
+    to the ~12 seconds the relic reward screen gives players, so the
+    info clears off the screen about when the choice locks in.
+
+    The body is a scrollable canvas sized to fit all the cards when
+    there's room (the usual four fit on any common monitor); the
+    scrollbar appears only when content exceeds the height cap.
+
+    Unlike the overlay above it, this panel reaches down into the
+    captured band of the screen, so the controller destroys it before
+    every grab.
+    """
+
+    # Inner content width: WFPC._CARD_WIDTH (280) plus 4px of card
+    # padding per side, so cards render at the same width as in the
+    # main window's results grid.
+    BODY_WIDTH = 288
+
+    # Body height cap as a fraction of the monitor height. Four cards
+    # come in well under this on 1080p and up, so scrolling is the
+    # exception, not the rule.
+    MAX_BODY_FRAC = 0.6
+
+    def __init__(self, master, anchor=None, monitor=None, on_expire=None):
+        super().__init__(master)
+        self._anchor = anchor  # the InGameOverlay to sit underneath
+        self._monitor = monitor
+        self._on_expire = on_expire
+        self._countdown_after_id = None
+        self._remaining = 0
+
+        # Borderless, always-on-top, gold-edged like the overlay above
+        self.overrideredirect(True)
+        self.wm_attributes("-topmost", True)
+
+        outer = tk.Frame(self, bg=COLORS["border"], padx=1, pady=1)
+        outer.pack(fill="both", expand=True)
+        inner = tk.Frame(outer, bg=COLORS["bg_dark"])
+        inner.pack(fill="both", expand=True)
+
+        # Header: title on the left, ticking countdown on the right
+        header = tk.Frame(inner, bg=COLORS["bg_title"])
+        header.pack(fill="x")
+        tk.Label(
+            header,
+            text="Rewards",
+            bg=COLORS["bg_title"],
+            fg=COLORS["border"],
+            font=("Consolas", 10, "bold"),
+            anchor="w",
+        ).pack(side="left", padx=8, pady=3)
+        self._countdown_label = tk.Label(
+            header,
+            text="",
+            bg=COLORS["bg_title"],
+            fg=COLORS["text_dim"],
+            font=("Consolas", 9),
+            anchor="e",
+        )
+        self._countdown_label.pack(side="right", padx=8, pady=3)
+
+        # Scrollable body: canvas + (auto-hidden) scrollbar + inner frame
+        body = tk.Frame(inner, bg=COLORS["bg_dark"])
+        body.pack(fill="both", expand=True)
+
+        self._scrollbar = tk.Scrollbar(
+            body, orient="vertical", troughcolor=COLORS["bg_dark"]
+        )
+        self._canvas = tk.Canvas(
+            body,
+            bg=COLORS["bg_dark"],
+            highlightthickness=0,
+        )
+        self._canvas.configure(yscrollcommand=self._on_scroll_set)
+        self._scrollbar.configure(command=self._canvas.yview)
+        self._canvas.pack(side="left", fill="both", expand=True, padx=6, pady=6)
+
+        # Frame the cards (or a message) get packed into by the main GUI
+        self.content = tk.Frame(self._canvas, bg=COLORS["bg_dark"])
+        self._content_window = self._canvas.create_window(
+            (0, 0), window=self.content, anchor="nw"
+        )
+
+        self._canvas.bind("<Enter>", self._bind_mousewheel)
+        self._canvas.bind("<Leave>", self._unbind_mousewheel)
+
+    def finalize(self, duration_s):
+        """
+        Called once content has been packed into self.content: size the
+        body to fit (up to the height cap), position the panel under
+        the in-game overlay, and start the auto-dismiss countdown.
+        """
+        self.update_idletasks()
+        content_h = self.content.winfo_reqheight()
+
+        if self._monitor:
+            max_h = int(self._monitor["height"] * self.MAX_BODY_FRAC)
+        else:
+            max_h = int(self.winfo_screenheight() * self.MAX_BODY_FRAC)
+        body_h = min(content_h, max_h)
+
+        self._canvas.configure(width=self.BODY_WIDTH, height=body_h)
+        self._canvas.itemconfig(self._content_window, width=self.BODY_WIDTH)
+        self._canvas.configure(scrollregion=(0, 0, self.BODY_WIDTH, content_h))
+
+        # Pack the scrollbar up front when we already know the content
+        # overflows, so the panel width is final before positioning.
+        if content_h > body_h:
+            self._scrollbar.pack(side="right", fill="y", pady=6)
+
+        # Position: right edges aligned with the overlay, sitting just
+        # below it. Falls back to top-right-of-monitor math if the
+        # overlay is somehow gone (approximating where its bottom edge
+        # would be: TOP_MARGIN + overlay height + gap).
+        self.update_idletasks()
+        panel_w = self.winfo_reqwidth()
+        fallback_y = InGameOverlay.TOP_MARGIN + 58
+        anchor = self._anchor
+        if anchor is not None and anchor.winfo_exists():
+            x = anchor.winfo_rootx() + anchor.winfo_width() - panel_w
+            y = anchor.winfo_rooty() + anchor.winfo_height() + 8
+        elif self._monitor:
+            x = self._monitor["left"] + self._monitor["width"] - panel_w - 20
+            y = self._monitor["top"] + fallback_y
+        else:
+            x = self.winfo_screenwidth() - panel_w - 20
+            y = fallback_y
+        self.geometry(f"+{x}+{y}")
+
+        self._remaining = duration_s
+        self._countdown_tick()
+
+    def _countdown_tick(self):
+        """Tick the header countdown once per second; expire at zero."""
+        if self._remaining <= 0:
+            self._expire()
+            return
+        self._countdown_label.config(text=f"{self._remaining}s")
+        self._remaining -= 1
+        self._countdown_after_id = self.after(1000, self._countdown_tick)
+
+    def _expire(self):
+        """Countdown hit zero: remove the panel and notify the owner."""
+        on_expire = self._on_expire
+        self.destroy()
+        if on_expire:
+            on_expire()
+
+    def destroy(self):
+        """Cancel the countdown timer before the window goes away."""
+        if self._countdown_after_id is not None:
+            self.after_cancel(self._countdown_after_id)
+            self._countdown_after_id = None
+        self._unbind_mousewheel(None)
+        super().destroy()
+
+    # --- scrolling -----------------------------------------------------------
+
+    def _on_scroll_set(self, first, last):
+        """Auto-hide the scrollbar when all the cards fit."""
+        if float(first) <= 0.0 and float(last) >= 1.0:
+            self._scrollbar.pack_forget()
+        else:
+            self._scrollbar.pack(side="right", fill="y", pady=6)
+        self._scrollbar.set(first, last)
+
+    def _bind_mousewheel(self, event):
+        self._canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+
+    def _unbind_mousewheel(self, event):
+        self._canvas.unbind_all("<MouseWheel>")
+
+    def _on_mousewheel(self, event):
+        self._canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
 
 # =============================================================================
@@ -386,17 +582,11 @@ class WFPC(tk.Tk):
         self._result_cards = []
         self._prev_num_cols = 0
 
-        # Auto-return countdown state. When an in-game capture finishes,
-        # the In Game button counts down ("In Game  30s...") and then
-        # flips back to the overlay. _countdown_after_id is the pending
-        # tick's 'after' id (None when no countdown is running),
-        # _countdown_on_fire is the callback to run at zero, and
-        # _ingame_hovering tracks whether the cursor is over the button
-        # so a hover can show "Cancel" instead of the countdown.
-        self._countdown_after_id = None
-        self._countdown_remaining = 0
-        self._countdown_on_fire = None
-        self._ingame_hovering = False
+        # In-game windows: the floating overlay (kept so the results
+        # panel can position itself beneath it) and the results panel
+        # from the most recent capture (None when nothing is showing).
+        self._ingame_overlay = None
+        self._ingame_results_panel = None
 
         # On-screen reward highlight state. The highlight is four thin
         # strip windows forming a rectangle around the best reward (see
@@ -507,7 +697,7 @@ class WFPC(tk.Tk):
         self.ingame_btn = HoverButton(
             button_frame,
             text="\u25b8  In Game",
-            command=self._ingame_button_clicked,
+            command=lambda: self.controller.enter_in_game_mode(),
             fg=COLORS["text"],
             font=btn_font,
             relief="flat",
@@ -516,10 +706,6 @@ class WFPC(tk.Tk):
             cursor="hand2",
         )
         self.ingame_btn.pack(side="left", padx=(0, 6))
-        # Extra hover handlers (add="+" so HoverButton's color swap still
-        # runs) to show "Cancel" while the auto-return countdown is active.
-        self.ingame_btn.bind("<Enter>", self._ingame_hover_enter, add="+")
-        self.ingame_btn.bind("<Leave>", self._ingame_hover_leave, add="+")
 
         # Clear — reset results after viewing
         self.clear_btn = HoverButton(
@@ -808,82 +994,6 @@ class WFPC(tk.Tk):
             else:
                 btn.set_style(COLORS["btn"], COLORS["btn_hover"], fg=COLORS["text"])
 
-    # =========================================================================
-    # AUTO-RETURN COUNTDOWN — In Game button ticks down then flips to overlay
-    # =========================================================================
-
-    _INGAME_TEXT = "▸  In Game"
-    _INGAME_CANCEL_TEXT = "✕  Cancel"
-
-    def _ingame_button_clicked(self):
-        """
-        Route a click on the In Game button. While the auto-return
-        countdown is running the button acts as a Cancel (stop the
-        countdown, stay in the main window); otherwise it enters
-        in-game mode as usual.
-        """
-        if self._countdown_after_id is not None:
-            self.stop_ingame_countdown()
-        else:
-            self.controller.enter_in_game_mode()
-
-    def start_ingame_countdown(self, seconds, on_fire):
-        """
-        Begin counting down on the In Game button. Each second the label
-        updates ("In Game  30s...", "29s...", ...); at zero, on_fire()
-        runs (the controller's enter_in_game_mode). Any existing
-        countdown is cleared first so back-to-back captures don't stack.
-        """
-        self.stop_ingame_countdown()
-        self._countdown_remaining = seconds
-        self._countdown_on_fire = on_fire
-        self._countdown_tick()
-
-    def _countdown_tick(self):
-        """Update the button label once per second, then fire at zero."""
-        if self._countdown_remaining <= 0:
-            on_fire = self._countdown_on_fire
-            self._clear_countdown_state()
-            if on_fire:
-                on_fire()
-            return
-
-        # While the cursor is over the button we leave it reading
-        # "Cancel" instead of flashing the countdown out from under it.
-        if not self._ingame_hovering:
-            self.ingame_btn.config(
-                text=f"{self._INGAME_TEXT}  {self._countdown_remaining}s..."
-            )
-        self._countdown_remaining -= 1
-        self._countdown_after_id = self.after(1000, self._countdown_tick)
-
-    def stop_ingame_countdown(self):
-        """Cancel a running auto-return countdown, if any, and reset the label."""
-        if self._countdown_after_id is not None:
-            self.after_cancel(self._countdown_after_id)
-        self._clear_countdown_state()
-
-    def _clear_countdown_state(self):
-        """Reset countdown bookkeeping and restore the default button label."""
-        self._countdown_after_id = None
-        self._countdown_remaining = 0
-        self._countdown_on_fire = None
-        self.ingame_btn.config(text=self._INGAME_TEXT)
-
-    def _ingame_hover_enter(self, event):
-        """Show 'Cancel' while hovering during an active countdown."""
-        self._ingame_hovering = True
-        if self._countdown_after_id is not None:
-            self.ingame_btn.config(text=self._INGAME_CANCEL_TEXT)
-
-    def _ingame_hover_leave(self, event):
-        """Restore the countdown label when the cursor leaves mid-countdown."""
-        self._ingame_hovering = False
-        if self._countdown_after_id is not None:
-            self.ingame_btn.config(
-                text=f"{self._INGAME_TEXT}  {self._countdown_remaining + 1}s..."
-            )
-
     def set_refresh_busy(self, busy):
         """Disable or re-enable the refresh button and update its label."""
         if busy:
@@ -896,8 +1006,87 @@ class WFPC(tk.Tk):
         MonitorPicker(self, on_select)
 
     def show_in_game_overlay(self, on_capture, on_back, monitor=None):
-        """Create and display the minimal in-game floating panel."""
-        InGameOverlay(self, on_capture, on_back, monitor)
+        """
+        Create and display the minimal in-game floating panel. The
+        instance is kept so the results panel can anchor itself
+        directly beneath it.
+        """
+        self._ingame_overlay = InGameOverlay(self, on_capture, on_back, monitor)
+
+    # =========================================================================
+    # IN-GAME RESULTS PANEL — capture results shown without the main GUI
+    # =========================================================================
+
+    def show_in_game_results(self, items, monitor, duration_s):
+        """
+        Show capture results in the in-game panel below the overlay:
+        the same reward cards as the main window, one per row, with the
+        best buy price highlighted. Replaces any panel from a previous
+        capture and self-dismisses after duration_s seconds.
+        """
+        panel = self._new_ingame_panel(monitor)
+
+        item_price_rows = []
+        for entry in items:
+            card_pad, item_row, buy_price = self._build_result_card(
+                panel.content, entry
+            )
+            card_pad.pack(fill="x", padx=4, pady=4)
+            if buy_price is not None:
+                item_price_rows.append((buy_price, item_row))
+
+        if item_price_rows:
+            best = max(item_price_rows, key=lambda x: x[0])
+            self._highlight_row(best[1], COLORS["hl_green"])
+
+        panel.finalize(duration_s)
+
+    def show_in_game_message(self, text, monitor, duration_s):
+        """
+        Show a status/error message (nothing recognized, capture
+        failed, ...) in the in-game panel — the main window is hidden
+        while in-game mode is active, so its results area can't be the
+        only place these appear.
+        """
+        panel = self._new_ingame_panel(monitor)
+        tk.Label(
+            panel.content,
+            text=text,
+            bg=COLORS["bg_dark"],
+            fg=COLORS["text_dim"],
+            font=("Consolas", 10),
+            justify="left",
+            wraplength=InGameResultsPanel.BODY_WIDTH - 20,
+        ).pack(padx=10, pady=14)
+        panel.finalize(duration_s)
+
+    def _new_ingame_panel(self, monitor):
+        """Replace any existing in-game results panel with a fresh one."""
+        self.hide_in_game_results()
+        panel = InGameResultsPanel(
+            self,
+            anchor=self._ingame_overlay,
+            monitor=monitor,
+            on_expire=self._on_ingame_results_expired,
+        )
+        self._ingame_results_panel = panel
+        return panel
+
+    def hide_in_game_results(self):
+        """Remove the in-game results panel, if one is showing."""
+        panel = self._ingame_results_panel
+        self._ingame_results_panel = None
+        if panel is not None and panel.winfo_exists():
+            panel.destroy()
+
+    def _on_ingame_results_expired(self):
+        """
+        The panel's countdown hit zero and it destroyed itself. Take
+        the gold reward highlight down with it, so everything a capture
+        drew leaves the screen together.
+        """
+        self._ingame_results_panel = None
+        self.hide_reward_highlight()
 
     # Reward-highlight styling: border thickness, and extra breathing room
     # added around the OCR text bounds so the box doesn't touch the glyphs.
@@ -1023,13 +1212,75 @@ class WFPC(tk.Tk):
         win.deiconify()
         win.lift()
 
+    def _build_result_card(self, parent, entry):
+        """
+        Build one reward card into `parent`: gold top accent, full item
+        name, and Item/Set price rows. Geometry management is left to
+        the caller (the main window grids cards during reflow; the
+        in-game panel packs them in a single column). Shared by
+        display_results and show_in_game_results so the two render
+        identically.
+
+        `entry` is one dict from market_data.find_items_from_boxes.
+        Returns (card_frame, item_price_row, buy_price) so the caller
+        can highlight the best-priced row.
+        """
+        name = entry["name"]
+        buy_price = entry["buy_price"]
+        set_price = entry["set_buy_price"]
+
+        # Outer card container
+        card_pad = tk.Frame(parent, bg=COLORS["bg_dark"])
+
+        # Thin gold accent along the top edge of the card
+        tk.Frame(card_pad, bg=COLORS["border"], height=2).pack(fill="x")
+
+        # Card body with slightly elevated background
+        card = tk.Frame(card_pad, bg=COLORS["bg_card"])
+        card.pack(fill="both", expand=True)
+
+        # --- Item name header (full name, wraps within the card) ---
+        tk.Label(
+            card,
+            text=name,
+            bg=COLORS["bg_card"],
+            fg=COLORS["border"],
+            font=("Consolas", 11, "bold"),
+            anchor="w",
+            justify="left",
+            wraplength=self._CARD_WIDTH - 24,
+        ).pack(fill="x", padx=10, pady=(10, 2))
+
+        # Separator under header
+        tk.Frame(card, bg=COLORS["separator"], height=1).pack(
+            fill="x",
+            padx=10,
+            pady=(4, 6),
+        )
+
+        # --- Item buy price (this specific reward) ---
+        item_str = f"{buy_price}p" if buy_price is not None else "—"
+        item_row = self._add_result_row(
+            card, "Item", item_str, fg=COLORS["text_muted"], bold=True
+        )
+
+        # --- Set buy price (the full set this part belongs to) ---
+        set_str = f"{set_price}p" if set_price is not None else "—"
+        self._add_result_row(card, "Set", set_str, fg=COLORS["green"])
+
+        # Bottom padding inside the card
+        tk.Frame(card, bg=COLORS["bg_card"], height=6).pack()
+
+        return card_pad, item_row, buy_price
+
     def display_results(self, items):
         """
-        Display one card per matched reward item. Each card shows the
-        full item name, the item's own buy price, and the buy price of
-        the set it belongs to. Cards reflow responsively as the window
-        resizes; the most valuable reward (highest item buy price) is
-        highlighted so the best pick stands out.
+        Display one card per matched reward item in the main window.
+        Each card shows the full item name, the item's own buy price,
+        and the buy price of the set it belongs to. Cards reflow
+        responsively as the window resizes; the most valuable reward
+        (highest item buy price) is highlighted so the best pick
+        stands out.
 
         `items` is the list of dicts returned by
         market_data.find_items_from_boxes.
@@ -1044,57 +1295,11 @@ class WFPC(tk.Tk):
         item_price_rows = []
 
         for entry in items:
-            name = entry["name"]
-            buy_price = entry["buy_price"]
-            set_price = entry["set_buy_price"]
-
-            # =================================================================
-            # CARD — each reward gets a raised card with a gold top accent
-            # =================================================================
-
-            # Outer card container — this is what gets gridded during reflow
-            card_pad = tk.Frame(self.results_list, bg=COLORS["bg_dark"])
-
-            # Thin gold accent along the top edge of the card
-            tk.Frame(card_pad, bg=COLORS["border"], height=2).pack(fill="x")
-
-            # Card body with slightly elevated background
-            card = tk.Frame(card_pad, bg=COLORS["bg_card"])
-            card.pack(fill="both", expand=True)
-
-            # --- Item name header (full name, wraps within the card) ---
-            tk.Label(
-                card,
-                text=name,
-                bg=COLORS["bg_card"],
-                fg=COLORS["border"],
-                font=("Consolas", 11, "bold"),
-                anchor="w",
-                justify="left",
-                wraplength=self._CARD_WIDTH - 24,
-            ).pack(fill="x", padx=10, pady=(10, 2))
-
-            # Separator under header
-            tk.Frame(card, bg=COLORS["separator"], height=1).pack(
-                fill="x",
-                padx=10,
-                pady=(4, 6),
-            )
-
-            # --- Item buy price (this specific reward) ---
-            item_str = f"{buy_price}p" if buy_price is not None else "\u2014"
-            row = self._add_result_row(
-                card, "Item", item_str, fg=COLORS["text_muted"], bold=True
+            card_pad, item_row, buy_price = self._build_result_card(
+                self.results_list, entry
             )
             if buy_price is not None:
-                item_price_rows.append((buy_price, row))
-
-            # --- Set buy price (the full set this part belongs to) ---
-            set_str = f"{set_price}p" if set_price is not None else "\u2014"
-            self._add_result_row(card, "Set", set_str, fg=COLORS["green"])
-
-            # Bottom padding inside the card
-            tk.Frame(card, bg=COLORS["bg_card"], height=6).pack()
+                item_price_rows.append((buy_price, item_row))
 
             # Store the card frame for responsive reflow
             self._result_cards.append(card_pad)
