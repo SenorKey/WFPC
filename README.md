@@ -61,8 +61,7 @@ build-env\Scripts\activate          # or create once: python -m venv build-env
 pip install -r requirements.txt     # catches any new/updated deps
 pip install pyinstaller             # first time only
 
-pyinstaller --noconfirm --clean --onefile --windowed --name WFPC ^
-  --collect-all rapidocr_onnxruntime --collect-all onnxruntime main.py
+pyinstaller --noconfirm --clean --onefile --windowed --name WFPC --collect-all rapidocr_onnxruntime --collect-all onnxruntime main.py
 ```
 
 (PowerShell uses backtick `` ` `` for line breaks instead of `^`, or just put it
