@@ -34,6 +34,10 @@ CROP_BOTTOM = 0.20
 # to captures triggered from the in-game overlay, not the main window.
 AUTO_INGAME_DELAY_MS = 30000
 
+# How long (in milliseconds) the on-screen box drawn around the
+# highest-priced reward stays up after a capture before removing itself.
+HIGHLIGHT_DURATION_MS = 8000
+
 
 class AppController:
     """
@@ -401,6 +405,10 @@ class AppController:
         """
         x, y, w, h = self.capture_region
 
+        # A highlight box from the previous capture would be photographed
+        # into this one if it were still up — remove it before grabbing.
+        self.gui.hide_reward_highlight()
+
         try:
             with mss.mss() as sct:
                 region = {
@@ -447,11 +455,47 @@ class AppController:
         items = find_items_from_boxes(self.market_data, boxes)
 
         if items:
+            self._highlight_best_reward(items, pil_image)
             self.gui.display_results(items)
         else:
             self.gui.show_message(
                 "No prime items recognized.\n" f"OCR read: {' '.join(box_texts[:6])}"
             )
+
+    def _highlight_best_reward(self, items, pil_image):
+        """
+        Flash an on-screen box around the highest-priced matched reward
+        so the user can spot the best pick in game without reading the
+        results window. Uses the same highest-item-buy-price rule as the
+        green highlight in the results panel, so the two always agree.
+
+        The OCR bboxes are in capture-image pixels, and the capture is a
+        crop of the screen, so mapping back to screen coordinates is the
+        capture region's origin plus the box — after dividing out the
+        HiDPI scale. (On scaled displays mss returns more pixels than
+        the region's nominal size, while Tk positions windows in logical
+        points, so image pixels must be converted back to points first.)
+        """
+        candidates = [
+            item for item in items
+            if item.get("bbox") is not None and item.get("buy_price") is not None
+        ]
+        if not candidates:
+            return
+        best = max(candidates, key=lambda item: item["buy_price"])
+
+        rx, ry, rw, rh = self.capture_region
+        scale_x = pil_image.width / rw
+        scale_y = pil_image.height / rh
+
+        x0, y0, x1, y1 = best["bbox"]
+        self.gui.show_reward_highlight(
+            rx + int(x0 / scale_x),
+            ry + int(y0 / scale_y),
+            max(1, int((x1 - x0) / scale_x)),
+            max(1, int((y1 - y0) / scale_y)),
+            HIGHLIGHT_DURATION_MS,
+        )
 
     # =========================================================================
     # CLEAR — reset the results display

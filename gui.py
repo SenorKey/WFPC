@@ -398,6 +398,13 @@ class WFPC(tk.Tk):
         self._countdown_on_fire = None
         self._ingame_hovering = False
 
+        # On-screen reward highlight state. The highlight is four thin
+        # strip windows forming a rectangle around the best reward (see
+        # show_reward_highlight). _highlight_strips holds those windows
+        # and _highlight_after_id the pending auto-hide timer.
+        self._highlight_strips = []
+        self._highlight_after_id = None
+
         self._build_ui()
 
     def set_controller(self, controller):
@@ -891,6 +898,66 @@ class WFPC(tk.Tk):
     def show_in_game_overlay(self, on_capture, on_back, monitor=None):
         """Create and display the minimal in-game floating panel."""
         InGameOverlay(self, on_capture, on_back, monitor)
+
+    # Reward-highlight styling: border thickness, and extra breathing room
+    # added around the OCR text bounds so the box doesn't touch the glyphs.
+    _HL_THICKNESS = 3
+    _HL_PAD = 6
+
+    def show_reward_highlight(self, x, y, w, h, duration_ms):
+        """
+        Draw a temporary rectangle directly on the screen around the
+        given region — (x, y, w, h) in absolute screen coordinates, e.g.
+        the OCR bounds of the highest-priced reward — then remove it
+        automatically after duration_ms.
+
+        The rectangle is built from four thin borderless always-on-top
+        strip windows (top, bottom, left, right edges) rather than one
+        transparent window: per-pixel window transparency isn't portable
+        across platforms in Tk, while plain solid topmost windows behave
+        the same everywhere. Like the in-game overlay, this only shows
+        over the game in windowed/borderless mode — exclusive fullscreen
+        draws over any other window.
+        """
+        self.hide_reward_highlight()
+
+        x -= self._HL_PAD
+        y -= self._HL_PAD
+        w += 2 * self._HL_PAD
+        h += 2 * self._HL_PAD
+
+        # (x, y, w, h) of the top, bottom, left, and right border strips,
+        # sitting just outside the padded region.
+        t = self._HL_THICKNESS
+        strips = [
+            (x - t, y - t, w + 2 * t, t),
+            (x - t, y + h, w + 2 * t, t),
+            (x - t, y, t, h),
+            (x + w, y, t, h),
+        ]
+        for sx, sy, sw, sh in strips:
+            strip = tk.Toplevel(self)
+            strip.overrideredirect(True)
+            strip.wm_attributes("-topmost", True)
+            strip.configure(bg=COLORS["border"])
+            strip.geometry(f"{sw}x{sh}+{sx}+{sy}")
+            self._highlight_strips.append(strip)
+
+        self._highlight_after_id = self.after(
+            duration_ms, self.hide_reward_highlight
+        )
+
+    def hide_reward_highlight(self):
+        """Remove the on-screen reward highlight, if one is showing."""
+        if self._highlight_after_id is not None:
+            self.after_cancel(self._highlight_after_id)
+            self._highlight_after_id = None
+        for strip in self._highlight_strips:
+            try:
+                strip.destroy()
+            except tk.TclError:
+                pass  # already gone (e.g. during app shutdown)
+        self._highlight_strips = []
 
     def show_message(self, text):
         """Show a centered placeholder message in the results area."""

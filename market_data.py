@@ -355,6 +355,11 @@ def find_items_from_boxes(cache_data, detections):
             "buy_price":     the item's best buy price (or None),
             "set_name":      the set prefix, e.g. 'Braton',
             "set_buy_price": the 'Braton Prime Set' buy price (or None),
+            "bbox":          (x0, y0, x1, y1) bounds of the reward's text
+                             in capture-image pixels. For a name that
+                             wrapped onto multiple lines this is the
+                             union of all the stitched boxes, so it
+                             frames the whole name.
         }
     """
     # Build normalized full item name -> (item, prefix), and remember each
@@ -375,7 +380,7 @@ def find_items_from_boxes(cache_data, detections):
     seen = set()
     results = []
 
-    def add_match(entry):
+    def add_match(entry, bbox):
         item, prefix = entry
         if item["slug"] in seen:
             return
@@ -385,6 +390,7 @@ def find_items_from_boxes(cache_data, detections):
             "buy_price": item["best_buy_price"],
             "set_name": prefix,
             "set_buy_price": set_price_by_prefix.get(prefix),
+            "bbox": bbox,
         })
 
     def contained_entry(s):
@@ -409,8 +415,9 @@ def find_items_from_boxes(cache_data, detections):
         # that merged two reward names together.
         contained = [name for name in names_by_len if name in norm]
         if contained:
+            bbox = _bbox(box)
             for name in contained:
-                add_match(norm_to_entry[name])
+                add_match(norm_to_entry[name], bbox)
         else:
             leftovers.append([_bbox(box), norm])
 
@@ -461,7 +468,15 @@ def find_items_from_boxes(cache_data, detections):
             entry = ce
 
         if entry is not None:
-            add_match(entry)
+            # Union of every stitched line's box, so the bbox frames the
+            # whole wrapped name rather than just its first line.
+            chain_bboxes = [leftovers[k][0] for k in chain]
+            add_match(entry, (
+                min(b[0] for b in chain_bboxes),
+                min(b[1] for b in chain_bboxes),
+                max(b[2] for b in chain_bboxes),
+                max(b[3] for b in chain_bboxes),
+            ))
             used.update(chain)
 
     return results
