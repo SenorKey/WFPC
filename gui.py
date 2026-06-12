@@ -271,7 +271,7 @@ class InGameOverlay(tk.Toplevel):
     # Vertical offset from the top edge of the monitor. Sits below the
     # game's own top-of-screen UI — the health bar during missions and
     # the credits/platinum readout in menus.
-    TOP_MARGIN = 60
+    TOP_MARGIN = 90
 
     def __init__(self, master, on_capture, on_back, monitor=None):
         super().__init__(master)
@@ -811,9 +811,7 @@ class WFPC(tk.Tk):
         fit without scrolling, but if the window is shrunk a scrollbar
         appears automatically (see _on_top_scroll_set).
         """
-        panel = tk.Frame(
-            parent, bg=COLORS["bg_dark"], width=self._TOP_PANEL_WIDTH
-        )
+        panel = tk.Frame(parent, bg=COLORS["bg_dark"], width=self._TOP_PANEL_WIDTH)
         panel.pack(side="right", fill="y", padx=(8, 0))
         # Keep the panel at its fixed width regardless of child content
         panel.pack_propagate(False)
@@ -1132,9 +1130,7 @@ class WFPC(tk.Tk):
             strip.geometry(f"{sw}x{sh}+{sx}+{sy}")
             self._highlight_strips.append(strip)
 
-        self._highlight_after_id = self.after(
-            duration_ms, self.hide_reward_highlight
-        )
+        self._highlight_after_id = self.after(duration_ms, self.hide_reward_highlight)
 
     def hide_reward_highlight(self):
         """Remove the on-screen reward highlight, if one is showing."""
@@ -1362,9 +1358,7 @@ class WFPC(tk.Tk):
         for i in range(max(num_cols, 20)):
             self.results_list.columnconfigure(i, weight=0, uniform="", minsize=0)
         for col in range(num_cols):
-            self.results_list.columnconfigure(
-                col, weight=0, minsize=col_total
-            )
+            self.results_list.columnconfigure(col, weight=0, minsize=col_total)
 
         # Grid each card. Every column is pinned to the same width
         # (minsize=col_total, weight=0), and sticky="new" stretches each
