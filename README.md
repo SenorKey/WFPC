@@ -2,31 +2,33 @@
 
 In-game price checker for Warframe relic rewards.
 
-WFPC is a desktop overlay that captures the relic reward screen, reads item names with OCR, and displays current best buy prices from [warframe.market](https://warframe.market) — all without leaving the game.
+WFPC captures the relic reward screen, reads the item names with OCR, and shows current best buy prices from [warframe.market](https://warframe.market) — so you can pick the most valuable reward before the timer runs out.
 
 ## What it does
 
-- Sits on top of your game as a transparent overlay
-- Captures the screen region behind the overlay on command
-- Reads item names from the screenshot using OCR
-- Matches recognized names against all known prime items
-- Displays per-part prices and full set prices side by side
-- Highlights the best-value option so you can pick quickly
+- Runs as a normal desktop window for setup and viewing results
+- Switches to a small floating **In Game** panel (top-right) so you can capture without leaving the game
+- Captures the center region of your game's monitor automatically — no manual region drawing
+- Reads item names from the screenshot with OCR (RapidOCR, bundled — no external engine to install)
+- Matches recognized text against all known prime items, in two passes so names that wrapped onto two lines still match
+- Displays the price for each reward item, plus a panel of top-value items from the loaded data
+- After a capture, automatically flips back to the In Game panel after ~30 seconds, ready for the next relic
 
 ## How to use
 
-1. Launch WFPC and click **Refresh Data** to pull current prices from warframe.market (takes a few minutes on first run; cached afterward).
-2. Position the transparent capture region over the relic reward area in-game.
-3. Click **Capture** when rewards appear.
-4. Prices show up in the overlay — part breakdowns, set prices, and the best pick highlighted.
+1. Launch WFPC and click **Refresh** to pull current prices from warframe.market (takes a few minutes on first run; cached afterward).
+2. Click **In Game** to shrink down to the minimal top-right panel. On a multi-monitor setup you'll be asked which screen your game is on (remembered for next time).
+3. When the relic rewards appear, click **Capture** on the panel.
+4. The full window returns with the price for each reward item and a top-items panel. After ~30s it auto-switches back to the In Game panel for your next run — or click **Cancel** on the In Game button during the countdown to stay put.
 
 ## Setup
 
 ### Requirements
 
 - Python 3
-- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) installed and on your PATH
-- Windows (uses transparent window overlay and screen capture)
+- Windows (the capture and in-game flow are built around a PC Warframe setup)
+
+No external OCR engine is needed — RapidOCR bundles its models and runs on onnxruntime, both pulled in by pip.
 
 ### Install
 
@@ -42,7 +44,10 @@ python main.py
 
 ## Built with
 
-- **Tesseract OCR** + **OpenCV** — screen reading and image processing
+- **RapidOCR** (onnxruntime) — screen text recognition
 - **warframe.market API** — live pricing data
-- **Tkinter** — overlay UI
+- **Tkinter** — desktop UI and in-game panel
 - **mss** — screen capture
+- **Pillow** / **NumPy** — image handling
+</content>
+</invoke>
