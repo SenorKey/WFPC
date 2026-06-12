@@ -25,8 +25,8 @@ OCR_DEBUG = True
 # Fraction of each screen edge to crop off when auto-computing the capture
 # region. The relic reward names sit in the center of the screen, so we
 # keep the middle 70% (height) x 60% (width) and drop the edges.
-CROP_TOP = 0.25
-CROP_BOTTOM = 0.25
+CROP_TOP = 0.20
+CROP_BOTTOM = 0.20
 CROP_LEFT = 0.20
 CROP_RIGHT = 0.20
 
@@ -233,7 +233,7 @@ class AppController:
         they work directly with mss.grab.
         """
         mw, mh = monitor["width"], monitor["height"]
-        x = monitor["left"] + int(mw * CROP_LEFT)
+        x = 0  # monitor["left"] + int(mw * CROP_LEFT)
         y = monitor["top"] + int(mh * CROP_TOP)
         w = mw  # - int(mw * CROP_LEFT) - int(mw * CROP_RIGHT)
         h = mh - int(mh * CROP_TOP) - int(mh * CROP_BOTTOM)
