@@ -20,15 +20,13 @@ REGION_CACHE_FILE = "region_cache.json"
 # When True, every capture pops up a window showing the detected OCR text
 # boxes drawn over the captured region. Handy for tuning/testing how
 # RapidOCR is reading the screen; set to False for normal use.
-OCR_DEBUG = True
+OCR_DEBUG = False
 
-# Fraction of each screen edge to crop off when auto-computing the capture
-# region. The relic reward names sit in the center of the screen, so we
-# keep the middle 70% (height) x 60% (width) and drop the edges.
+# Fraction of the screen to crop off the top and bottom when auto-computing
+# the capture region. The relic reward names sit in a band across the middle
+# of the screen, so we keep the middle 60% of the height at full width.
 CROP_TOP = 0.20
 CROP_BOTTOM = 0.20
-CROP_LEFT = 0.20
-CROP_RIGHT = 0.20
 
 # After an in-game capture, how long (in milliseconds) to leave the full
 # results window up before automatically flipping back to the minimal
@@ -226,16 +224,16 @@ class AppController:
 
     def _center_region(self, monitor):
         """
-        Compute an (x, y, w, h) capture region covering the center of the
-        given mss monitor: CROP_* fractions are trimmed off each edge,
-        leaving the middle of the screen where the relic rewards appear.
-        Coordinates are absolute (offset by the monitor's left/top) so
-        they work directly with mss.grab.
+        Compute an (x, y, w, h) capture region covering the center band of
+        the given mss monitor: CROP_TOP/CROP_BOTTOM fractions are trimmed
+        off, leaving the full-width middle strip where the relic rewards
+        appear. Coordinates are absolute (offset by the monitor's left/top)
+        so they work directly with mss.grab on any monitor.
         """
         mw, mh = monitor["width"], monitor["height"]
-        x = 0  # monitor["left"] + int(mw * CROP_LEFT)
+        x = monitor["left"]
         y = monitor["top"] + int(mh * CROP_TOP)
-        w = mw  # - int(mw * CROP_LEFT) - int(mw * CROP_RIGHT)
+        w = mw
         h = mh - int(mh * CROP_TOP) - int(mh * CROP_BOTTOM)
         return (x, y, w, h)
 

@@ -1,8 +1,6 @@
 import tkinter as tk
-from PIL import Image, ImageTk, ImageEnhance
+from PIL import Image, ImageTk
 import mss
-
-from market_data import break_down_set
 
 
 # =============================================================================

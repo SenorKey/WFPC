@@ -1,10 +1,5 @@
-import unicodedata
-
-import sys
-import os
-
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import ImageDraw, ImageFont
 
 from rapidocr_onnxruntime import RapidOCR
 
@@ -19,16 +14,6 @@ def _get_engine():
     if _OCR_ENGINE is None:
         _OCR_ENGINE = RapidOCR()
     return _OCR_ENGINE
-
-
-def remove_accents(text):
-    """
-    Remove accents from characters in the text.
-    For example: 'á' -> 'a', 'é' -> 'e', 'ñ' -> 'n', etc.
-    """
-    normalized = unicodedata.normalize('NFD', text)
-    without_accents = ''.join(char for char in normalized if not unicodedata.combining(char))
-    return without_accents
 
 
 def read_boxes(pil_image):
@@ -66,56 +51,6 @@ def read_boxes(pil_image):
                 score = 0.0
             boxes.append((box, text, score))
     return boxes
-
-
-def read_image(pil_image):
-    """
-    Run OCR on a PIL image and return the raw text (all detected boxes
-    joined with spaces). Kept for callers that just want the text.
-    """
-    boxes = read_boxes(pil_image)
-    text = " ".join(text for _box, text, _score in boxes)
-    return remove_accents(text)
-
-
-def words_from_boxes(boxes):
-    """
-    Turn a list of OCR detections (from read_boxes) into a cleaned list
-    of usable words for set matching.
-
-    RapidOCR returns text per detected box; a single box can hold several
-    words (e.g. "Bronco Prime Blueprint"), so we flatten everything into
-    one word list to match the downstream lookup, which matches on
-    individual words.
-    """
-    raw_text = remove_accents(" ".join(text for _box, text, _score in boxes))
-
-    # Split into individual words
-    words = raw_text.split()
-
-    # Remove junk characters and very short words that aren't useful
-    junk = {"}", "{", "~", "-", "|", "=", ".", "?", "!", ":", ";", ",", "—", "'", '"'}
-    cleaned = []
-    for word in words:
-        # Skip junk symbols
-        if word in junk:
-            continue
-        # Skip single characters (except &, used in "Silva & Aegis")
-        if len(word) < 2 and word != "&":
-            continue
-        cleaned.append(word)
-
-    return cleaned
-
-
-def extract_words(pil_image):
-    """
-    Full pipeline: take a PIL image, run OCR, clean up the output,
-    and return a list of usable words for set matching.
-
-    This is the main function the GUI calls after capturing a screenshot.
-    """
-    return words_from_boxes(read_boxes(pil_image))
 
 
 def draw_boxes(pil_image, boxes):
