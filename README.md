@@ -49,5 +49,29 @@ python main.py
 - **Tkinter** — desktop UI and in-game panel
 - **mss** — screen capture
 - **Pillow** / **NumPy** — image handling
-</content>
-</invoke>
+
+## Building the Windows executable (maintainer notes)
+
+Notes to self for cutting a downloadable `WFPC.exe`. Must be done on Windows
+(PyInstaller can't cross-compile from macOS/Linux).
+
+```
+git pull
+build-env\Scripts\activate          # or create once: python -m venv build-env
+pip install -r requirements.txt     # catches any new/updated deps
+pip install pyinstaller             # first time only
+
+pyinstaller --noconfirm --clean --onefile --windowed --name WFPC ^
+  --collect-all rapidocr_onnxruntime --collect-all onnxruntime main.py
+```
+
+(PowerShell uses backtick `` ` `` for line breaks instead of `^`, or just put it
+all on one line. After the first build you can reuse the generated spec with
+`pyinstaller WFPC.spec`.)
+
+The two `--collect-all` flags are essential — they bundle RapidOCR's ONNX models
+and the onnxruntime DLLs. Without them the exe launches but crashes on first OCR.
+
+The result is `dist\WFPC.exe`. Smoke-test it (Refresh + one capture), ideally on
+a machine without Python, then attach it to a tagged GitHub release.
+
